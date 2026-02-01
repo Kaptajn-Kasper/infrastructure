@@ -1,95 +1,204 @@
-# infrastructure
-Automated infrastructure setup for server in cloud environment.
+# Infrastructure
 
-## Overview
+Automated infrastructure setup for quickly provisioning Ubuntu VPS instances for Docker Compose application deployment with Caddy reverse proxy.
 
-This repository contains automated setup scripts for configuring a secure server infrastructure. The `setup.sh` orchestrator runs modular setup scripts to configure various aspects of your server.
+**Philosophy**: Make it easier to spin up a new server than to fix a broken one.
 
-## Prerequisites
+## Quick Start
 
-- Root access to the server
-- Ubuntu/Debian-based Linux distribution
-- Bash shell
-
-## Configuration
-
-Create a `.env` file in the root directory with the required environment variables:
+### Manual Setup (SSH)
 
 ```bash
-SSH_PORT=42042
-GH_ACTIONS_USER=gh-actions
-```
+# 1. Clone the repository on your server
+git clone https://github.com/YOUR_USER/infrastructure.git
+cd infrastructure
 
-## Usage
+# 2. Create and customize your configuration
+cp .env.template .env
+nano .env
 
-Run the setup orchestrator as root:
-
-```bash
+# 3. Run the setup (as root)
 sudo ./setup.sh
 ```
 
-The orchestrator will:
-1. Load environment variables from `.env`
-2. Execute all setup scripts in sequence
-3. Track and report success/failure of each script
-4. Provide a comprehensive summary
+### Cloud-Init Setup
 
-## Setup Scripts
+Paste the following into your VPS provider's "User Data" field:
 
-### SSH Configuration (`scripts/change-port-for-ssh.sh`)
+```bash
+#!/bin/bash
+export GITHUB_REPO="https://github.com/YOUR_USER/infrastructure.git"
+export SSH_PORT=22022
+export OPERATOR_USER=operator
+curl -fsSL https://raw.githubusercontent.com/YOUR_USER/infrastructure/main/bootstrap.sh | bash
+```
 
-Configures SSH with a custom port for enhanced security:
-- Validates and updates SSH port configuration
-- Creates timestamped backups of `sshd_config`
-- Configures UFW firewall rules (if available)
-- Handles socket activation properly
-- Restarts SSH service
-- Verifies the new configuration
+## What Gets Installed
 
-**Important**: After running, test the new SSH port in a separate terminal before closing your current session.
+### Core (Always)
 
-### GitHub Actions User Setup (`scripts/add-gh-actions-user.sh`)
+| Component | Description |
+|-----------|-------------|
+| SSH Hardening | Custom port, rate limiting |
+| UFW Firewall | Deny incoming, allow SSH/HTTP/HTTPS |
+| Operator User | Daily admin with full sudo |
+| GH Actions User | CI/CD user with limited sudo |
+| GitHub SSH | SSH key + gh CLI |
+| System Config | UTC timezone, swap, locale |
+| Welcome Screen | Custom MOTD |
 
-Creates a dedicated user for GitHub Actions deployments with proper permissions:
-- Creates user if it doesn't exist (idempotent)
-- Adds user to docker group for container management
-- Generates SSH key pair (ed25519)
-- Configures authorized_keys for SSH access
-- Sets up passwordless sudo for docker and systemctl commands
-- Displays private key for GitHub Secrets configuration
+### Optional (Configurable via .env)
 
-**Output**: The script displays the SSH private key that should be added to your GitHub repository secrets as `SSH_PRIVATE_KEY`.
+| Component | Flag | Default |
+|-----------|------|---------|
+| Docker + Compose | `INSTALL_DOCKER` | `true` |
+| Caddy | `INSTALL_CADDY` | `true` |
+| Auto Updates | `INSTALL_UNATTENDED_UPGRADES` | `true` |
+| App Directory | `CREATE_APP_DIRECTORY` | `true` |
 
-**GitHub Secrets Required**:
-- `SSH_PRIVATE_KEY`: The private key displayed by the script
-- `SSH_USER`: The username (from `GH_ACTIONS_USER` in `.env`)
-- `SSH_HOST`: Your server IP or hostname
-- `SSH_PORT`: Your custom SSH port (from `SSH_PORT` in `.env`)
+## Directory Structure
 
-## Adding New Setup Scripts
+```
+infrastructure/
+├── setup.sh                 # Main orchestrator
+├── bootstrap.sh             # Cloud-init bootstrap
+├── .env.template            # Configuration template
+├── .env                     # Your configuration (gitignored)
+│
+├── scripts/
+│   ├── lib/
+│   │   └── common.sh        # Shared functions
+│   │
+│   ├── core/                # Always-run scripts
+│   │   ├── 00-validate-config.sh
+│   │   ├── 01-configure-system.sh
+│   │   ├── 02-change-ssh-port.sh
+│   │   ├── 03-configure-firewall.sh
+│   │   ├── 04-create-operator.sh
+│   │   ├── 05-setup-github-ssh.sh
+│   │   ├── 06-create-gh-actions.sh
+│   │   └── 07-setup-motd.sh
+│   │
+│   ├── optional/            # Conditionally-run scripts
+│   │   ├── docker.sh
+│   │   ├── caddy.sh
+│   │   ├── unattended-upgrades.sh
+│   │   └── app-directory.sh
+│   │
+│   └── verify.sh            # Post-setup health check
+│
+└── docs/
+    ├── CONFIGURATION.md     # Detailed config docs
+    └── TROUBLESHOOTING.md   # Common issues
+```
 
-To add additional setup scripts:
+## Configuration
 
-1. Create a new script in the `scripts/` directory
-2. Make it executable: `chmod +x scripts/your-script.sh`
-3. Add the script call to `setup.sh`:
-   ```bash
-   run_setup_script "your-script.sh"
-   ```
+Copy `.env.template` to `.env` and customize:
 
-The orchestrator will automatically handle execution, error tracking, and reporting.
+```bash
+# SSH Configuration
+SSH_PORT=22022
 
-## Security Best Practices
+# User Accounts
+OPERATOR_USER=operator
+GH_ACTIONS_USER=gh-actions
 
-- Always test SSH configuration changes in a new terminal before closing your current session
-- Keep backups of configuration files (automatically created by scripts)
-- Review firewall rules after setup
-- Consider disabling port 22 after verifying the new SSH port works: `sudo ufw delete allow 22/tcp`
+# Optional Components (true/false)
+INSTALL_DOCKER=true
+INSTALL_CADDY=true
+INSTALL_UNATTENDED_UPGRADES=true
+CREATE_APP_DIRECTORY=true
+
+# System Configuration
+CONFIGURE_SWAP=true
+CONFIGURE_TIMEZONE=true
+SERVER_HOSTNAME=myserver
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed documentation.
+
+## After Setup
+
+### 1. Test SSH Connection
+
+```bash
+# From your local machine (in a new terminal!)
+ssh -p 22022 operator@your-server-ip
+```
+
+### 2. Add GitHub SSH Key
+
+The setup displays a public key. Add it to GitHub:
+1. Go to https://github.com/settings/ssh/new
+2. Paste the public key
+3. Test: `ssh -T git@github.com`
+
+### 3. Deploy Your First App
+
+```bash
+cd /opt/apps
+git clone git@github.com:your/app.git myapp
+cd myapp
+docker compose up -d
+```
+
+### 4. Configure Caddy
+
+Edit `/etc/caddy/Caddyfile`:
+
+```
+myapp.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+```bash
+sudo systemctl reload caddy
+```
+
+## Verification
+
+Run the health check to verify everything is working:
+
+```bash
+sudo /path/to/infrastructure/scripts/verify.sh
+```
+
+## Security Features
+
+- **SSH Hardening**: Non-standard port, rate limiting (blocks after 6 attempts in 30s)
+- **Firewall**: UFW with deny-by-default, only SSH/HTTP/HTTPS open
+- **Auto Updates**: Automatic security patches via unattended-upgrades
+- **Least Privilege**: GH Actions user has limited sudo (docker + systemctl only)
+- **Operator Convenience**: Full NOPASSWD sudo for daily operations
 
 ## Troubleshooting
 
-If a setup script fails:
-1. Check the error output for specific issues
-2. Review the summary at the end of execution
-3. Configuration backups are stored with timestamps (e.g., `/etc/ssh/sshd_config.backup.YYYYMMDD_HHMMSS`)
-4. Scripts can be run individually from the `scripts/` directory if needed
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common issues and solutions.
+
+### Quick Fixes
+
+**Locked out of SSH?**
+```bash
+# Use VPS console to restore port 22
+sudo ufw allow 22/tcp
+sudo sed -i 's/Port .*/Port 22/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+**Docker permission denied?**
+```bash
+# Re-login to apply group membership
+exit
+ssh -p 22022 operator@server
+```
+
+## Logs
+
+Setup logs are stored in `/var/log/infrastructure-setup/`:
+
+```bash
+ls -la /var/log/infrastructure-setup/
+cat /var/log/infrastructure-setup/setup-*.log
+```
