@@ -296,13 +296,52 @@ deploy-apps                      # Deploy all apps from manifest
 deploy-apps --app <name>         # Deploy a single app by directory name
 deploy-apps --pull-only          # Update repos without restarting containers
 deploy-apps --no-caddy           # Skip Caddy snippet configuration and reload
+deploy-apps --app <name> --env dev --branch feature/x
+                                 # Deploy a branch to an isolated environment
+deploy-apps --app <name> --env dev --teardown
+                                 # Tear down an environment
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--app <name>` | Deploy a single app by its directory name |
+| `--pull-only` | Update repos without restarting containers |
+| `--no-caddy` | Skip Caddy snippet configuration and reload |
+| `--env <name>` | Deploy to a named environment (e.g. `dev`, `staging`) |
+| `--branch <branch>` | Git branch to clone/checkout (default: repo default branch) |
+| `--teardown` | Tear down the specified `--env` environment |
 
 Deployment logs are written to `/opt/apps/logs/deploy-<timestamp>.log`.
 
+### Environment deployments (`--env`)
+
+The `--env` flag deploys an app into a completely isolated environment alongside prod. This lets you test feature branches on the real server without touching the production deployment.
+
+**What `--env dev` changes:**
+
+| Aspect | Prod (no `--env`) | Dev (`--env dev`) |
+|--------|-------------------|-------------------|
+| Clone directory | `/opt/apps/map-guesser-game/` | `/opt/apps/map-guesser-game-dev/` |
+| Config directory | `/opt/apps/configs/map-guesser-game/` | `/opt/apps/configs/map-guesser-game-dev/` |
+| Container name | `map-guesser-game-app-prod` (from compose) | `map-guesser-game-app-dev` (auto-generated override) |
+| Caddy snippet | `Caddyfile.snippet` → `map-guesser-game.caddy` | `Caddyfile.snippet.dev` → `map-guesser-game-dev.caddy` |
+| Git branch | default branch | specified via `--branch` |
+
+The dev environment reuses the same `docker-compose.prod.yml` and `Dockerfile.prod` — it's a production-quality build of a different branch, not a live-reload dev server.
+
+**Validation rules:**
+
+- `--env prod` is rejected — prod is the default no-flag behavior
+- `--teardown` requires `--env`
+- Environment names must match `^[a-z][a-z0-9-]*$`
+
+**How container name overrides work:**
+
+When `--env` is set, the script reads the base compose file, finds all `container_name:` entries, replaces `-prod` suffixes with `-<env>` (or appends `-<env>` if no `-prod` suffix), and writes a `.compose.env-override.yml` alongside the compose file. Both files are passed to `docker compose` via `-f` flags. This file is gitignored.
+
 ### `Caddyfile.snippet` convention
 
-Each app repo can include a `Caddyfile.snippet` at its root to define its own reverse proxy configuration. During deployment, the snippet is copied to `/etc/caddy/conf.d/<app-name>.caddy` and Caddy is reloaded.
+Each app repo can include a `Caddyfile.snippet` at its root to define its own reverse proxy configuration. During deployment, the snippet is copied to `/opt/apps/caddy/conf.d/<app-name>.caddy` and Caddy is reloaded.
 
 Example `Caddyfile.snippet`:
 
@@ -312,7 +351,19 @@ myapp.example.com {
 }
 ```
 
-The main Caddyfile imports all snippets via `import /etc/caddy/conf.d/*.caddy`. Apps without a `Caddyfile.snippet` are skipped — you can always add Caddy config manually later.
+**Environment-specific snippets:** For env deployments, the script looks for `Caddyfile.snippet.<env>` instead. For example, `Caddyfile.snippet.dev` is used when deploying with `--env dev`. This file must be added to the app repo before deploying that environment.
+
+Example `Caddyfile.snippet.dev`:
+
+```caddy
+dev.myapp.example.com {
+    reverse_proxy myapp-dev:3000
+}
+```
+
+The main Caddyfile imports all snippets via `import /opt/apps/caddy/conf.d/*.caddy`. Apps without a matching snippet are skipped — you can always add Caddy config manually later.
+
+**DNS prerequisite:** Add an A record for the dev subdomain (e.g. `dev.myapp.example.com`) pointing to the server IP before deploying a new environment. A wildcard record (`*.myapp.example.com`) covers all future environments.
 
 ### Config injection
 
@@ -332,7 +383,87 @@ App secrets and environment files are managed through `/opt/apps/configs/<app>/`
 └── src/environments/environment.prod.ts    → /opt/apps/map-guesser-game/src/environments/environment.prod.ts
 ```
 
+Environment deployments get their own config directory (e.g. `/opt/apps/configs/map-guesser-game-dev/`). On first deploy, configs are seeded from the app's example files — you can copy values from the prod config directory if appropriate.
+
 **Adding config files manually**: You can put any file into the configs directory at the appropriate relative path. The deploy script will copy it into the app on every deploy. This is useful for files that don't have a corresponding example file in the repo.
+
+### Deployment workflows
+
+#### Deploy prod (default)
+
+```bash
+deploy-apps --app map-guesser-game
+```
+
+Pulls the default branch, builds, and deploys. No `--env` flag means prod.
+
+#### Deploy a feature branch to dev
+
+```bash
+# First run — seeds configs, stops before building:
+deploy-apps --app map-guesser-game --env dev --branch feature/new-maps
+
+# Edit configs with real values (or copy from prod):
+cp /opt/apps/configs/map-guesser-game/src/environments/environment.prod.ts \
+   /opt/apps/configs/map-guesser-game-dev/src/environments/environment.prod.ts
+cp /opt/apps/configs/map-guesser-game/src/environments/environment.ts \
+   /opt/apps/configs/map-guesser-game-dev/src/environments/environment.ts
+
+# Second run — builds and starts the dev container:
+deploy-apps --app map-guesser-game --env dev --branch feature/new-maps
+```
+
+#### Update dev after pushing new commits
+
+```bash
+deploy-apps --app map-guesser-game --env dev --branch feature/new-maps
+```
+
+Fetches, checks out the branch, pulls, rebuilds, and restarts.
+
+#### Switch dev to a different branch
+
+```bash
+deploy-apps --app map-guesser-game --env dev --branch feature/other-thing
+```
+
+The script runs `git fetch && git checkout <branch> && git pull` on the existing clone.
+
+#### Deploy a hotfix to prod from a specific branch
+
+```bash
+deploy-apps --app map-guesser-game --branch hotfix/urgent-fix
+```
+
+`--branch` works without `--env` — this deploys the branch directly to prod.
+
+#### Tear down dev
+
+```bash
+deploy-apps --app map-guesser-game --env dev --teardown
+```
+
+Stops containers, removes the clone directory and Caddy snippet, and reloads Caddy. The config directory (`/opt/apps/configs/map-guesser-game-dev/`) is preserved to avoid accidental secret loss — remove it manually if no longer needed.
+
+### Adding a new app for env deployments
+
+To support `--env` deployments for a new app:
+
+1. **Add a `Caddyfile.snippet.<env>` to the app repo** with the subdomain routing to the env container name. For example, `Caddyfile.snippet.dev`:
+   ```caddy
+   dev.myapp.example.com {
+       reverse_proxy myapp-container-dev:3000
+   }
+   ```
+
+2. **Add `.compose.env-override.yml` to the app's `.gitignore`** — this file is auto-generated by the deploy script.
+
+3. **Add a DNS record** for the env subdomain pointing to the server IP.
+
+4. **Deploy**:
+   ```bash
+   deploy-apps --app myapp --env dev --branch my-feature-branch
+   ```
 
 ---
 
