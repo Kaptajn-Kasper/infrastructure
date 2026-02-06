@@ -21,7 +21,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 INFRA_ROOT="$(dirname "$SCRIPT_DIR")"
 APPS_CONF="$INFRA_ROOT/apps.conf"
 APPS_DIR="/opt/apps"
-CADDY_CONF_DIR="/etc/caddy/conf.d"
+CADDY_CONF_DIR="/opt/apps/caddy/conf.d"
 LOG_DIR="$APPS_DIR/logs"
 LOG_FILE="$LOG_DIR/deploy-$(date +%Y%m%d_%H%M%S).log"
 
@@ -249,8 +249,7 @@ deploy_app() {
     if [ "$SKIP_CADDY" = false ] && [ -f "$app_dir/Caddyfile.snippet" ]; then
         local caddy_dest="$CADDY_CONF_DIR/$dir_name.caddy"
         if ! diff -q "$app_dir/Caddyfile.snippet" "$caddy_dest" &>/dev/null; then
-            sudo cp "$app_dir/Caddyfile.snippet" "$caddy_dest"
-            sudo chown caddy:caddy "$caddy_dest"
+            cp "$app_dir/Caddyfile.snippet" "$caddy_dest"
             log_success "Updated Caddy config for $dir_name"
             CADDY_CHANGED=true
         else
@@ -301,12 +300,12 @@ fi
 # Reload Caddy if any snippets changed
 if [ "$CADDY_CHANGED" = true ]; then
     log_step "Reloading Caddy"
-    if sudo caddy validate --config /etc/caddy/Caddyfile &>/dev/null; then
-        sudo systemctl reload caddy
+    if docker exec caddy caddy validate --config /etc/caddy/Caddyfile &>/dev/null; then
+        docker exec caddy caddy reload --config /etc/caddy/Caddyfile
         log_success "Caddy reloaded"
     else
         log_fail "Caddy config validation failed — not reloading"
-        log_warn "Run 'caddy validate --config /etc/caddy/Caddyfile' to see errors"
+        log_warn "Run 'docker exec caddy caddy validate --config /etc/caddy/Caddyfile' to see errors"
         WARNINGS=$((WARNINGS + 1))
     fi
 fi

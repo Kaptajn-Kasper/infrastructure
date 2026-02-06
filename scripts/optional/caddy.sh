@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install Caddy reverse proxy with automatic HTTPS
+# Install Caddy reverse proxy as a Docker container with automatic HTTPS
 
 set -e
 
@@ -10,70 +10,85 @@ source "$SCRIPT_DIR/../lib/common.sh"
 require_root
 load_env
 
-print_header "Caddy Installation"
+print_header "Caddy Installation (Docker)"
 
-# Check if Caddy is already installed
-if command_exists caddy; then
-    CADDY_VERSION=$(caddy version | head -1)
-    log_success "Caddy is already installed ($CADDY_VERSION)"
-else
-    log_info "Installing Caddy..."
+# --- Preflight: Docker must be installed ---
 
-    # Install prerequisites
-    apt-get update -qq
-    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl
-
-    # Add Caddy GPG key
-    log_info "Adding Caddy GPG key..."
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-
-    # Add Caddy repository
-    log_info "Adding Caddy repository..."
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-
-    # Install Caddy
-    apt-get update -qq
-    apt-get install -y -qq caddy
-
-    log_success "Caddy installed successfully"
+if ! command_exists docker; then
+    log_error "Docker is not installed. Run the Docker setup script first."
+    exit 1
 fi
 
-# Create Caddyfile if it doesn't exist
-CADDYFILE="/etc/caddy/Caddyfile"
+if ! docker info &>/dev/null; then
+    log_error "Cannot connect to Docker daemon."
+    exit 1
+fi
+
+# --- Ensure caddy-network exists ---
+# (caddy.sh runs before app-directory.sh in setup.sh, so create it here if needed)
+
+if ! docker network ls --format '{{.Name}}' | grep -q '^caddy-network$'; then
+    docker network create caddy-network
+    log_success "Created Docker network: caddy-network"
+else
+    log_success "Docker network caddy-network already exists"
+fi
+
+# --- Caddy directory layout ---
+
+CADDY_DIR="/opt/apps/caddy"
+CADDY_CONF_DIR="$CADDY_DIR/conf.d"
+CADDYFILE="$CADDY_DIR/Caddyfile"
+OPERATOR="${OPERATOR_USER:-operator}"
+
+mkdir -p "$CADDY_DIR"/{conf.d,data,config}
+
+# --- Migrate from systemd Caddy if present ---
+
+if systemctl is-active --quiet caddy 2>/dev/null; then
+    log_info "Detected running systemd Caddy — migrating..."
+
+    # Stop the systemd service
+    systemctl stop caddy
+    systemctl disable caddy 2>/dev/null || true
+    log_success "Stopped and disabled systemd Caddy service"
+
+    # Migrate certificates
+    SYSTEMD_CADDY_DATA="/var/lib/caddy/.local/share/caddy"
+    if [ -d "$SYSTEMD_CADDY_DATA" ]; then
+        cp -a "$SYSTEMD_CADDY_DATA"/. "$CADDY_DIR/data/"
+        log_success "Migrated certificates from $SYSTEMD_CADDY_DATA"
+    fi
+
+    # Migrate existing snippets
+    SYSTEMD_CONF_DIR="/etc/caddy/conf.d"
+    if [ -d "$SYSTEMD_CONF_DIR" ] && [ -n "$(ls -A "$SYSTEMD_CONF_DIR" 2>/dev/null)" ]; then
+        cp -a "$SYSTEMD_CONF_DIR"/. "$CADDY_CONF_DIR/"
+        log_success "Migrated snippets from $SYSTEMD_CONF_DIR"
+    fi
+fi
+
+# --- Create Caddyfile if it doesn't exist ---
+
 if [ ! -f "$CADDYFILE" ] || [ ! -s "$CADDYFILE" ]; then
     log_info "Creating default Caddyfile..."
-    backup_file "$CADDYFILE" 2>/dev/null || true
 
     cat > "$CADDYFILE" << 'EOF'
 # Caddy Configuration
 # ====================
 # Documentation: https://caddyserver.com/docs/caddyfile
 #
-# Example configurations:
-#
-# Basic reverse proxy:
-# example.com {
-#     reverse_proxy localhost:3000
-# }
-#
-# With custom headers:
-# api.example.com {
-#     reverse_proxy localhost:8080 {
-#         header_up X-Real-IP {remote_host}
-#     }
-# }
-#
-# Docker Compose app:
-# app.example.com {
-#     reverse_proxy app:3000
-# }
+# Apps on caddy-network are reachable by container name:
+#   app.example.com {
+#       reverse_proxy my-container:3000
+#   }
 
 # Import per-app configs from conf.d/
 import /etc/caddy/conf.d/*.caddy
 
 # Default: respond with placeholder on bare IP
 :80 {
-    respond "Caddy is running. Configure your domains in /etc/caddy/conf.d/"
+    respond "Caddy is running. Configure your domains in conf.d/"
 }
 EOF
 
@@ -82,52 +97,77 @@ else
     log_success "Caddyfile already exists"
 fi
 
-# Create Caddy config directory for includes
-CADDY_CONF_DIR="/etc/caddy/conf.d"
-if [ ! -d "$CADDY_CONF_DIR" ]; then
-    mkdir -p "$CADDY_CONF_DIR"
-    log_success "Created $CADDY_CONF_DIR for additional configs"
-fi
+# --- Create docker-compose.yml ---
 
-# Ensure correct permissions
-chown -R caddy:caddy /etc/caddy
-chmod 644 "$CADDYFILE"
+COMPOSE_FILE="$CADDY_DIR/docker-compose.yml"
 
-# Open firewall ports (if UFW is active)
+cat > "$COMPOSE_FILE" << 'EOF'
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./conf.d:/etc/caddy/conf.d:ro
+      - ./data:/data
+      - ./config:/config
+    networks:
+      - caddy-network
+
+networks:
+  caddy-network:
+    external: true
+    name: caddy-network
+EOF
+
+log_success "Docker Compose file created"
+
+# --- Set ownership ---
+
+chown -R "$OPERATOR:$OPERATOR" "$CADDY_DIR"
+
+# --- Open firewall ports (if UFW is active) ---
+
 if command_exists ufw && ufw status | grep -q "Status: active"; then
     log_info "Configuring firewall for Caddy..."
     add_ufw_rule "80" "tcp" "HTTP (Caddy)"
     add_ufw_rule "443" "tcp" "HTTPS (Caddy)"
 fi
 
-# Enable and start Caddy service
-log_info "Enabling Caddy service..."
-systemctl enable caddy
-systemctl start caddy
-log_success "Caddy service is running"
+# --- Start Caddy container ---
 
-# Validate configuration
+log_info "Starting Caddy container..."
+docker compose -f "$COMPOSE_FILE" up -d
+log_success "Caddy container is running"
+
+# --- Validate configuration ---
+
 log_info "Validating Caddy configuration..."
-if caddy validate --config "$CADDYFILE" &>/dev/null; then
+if docker exec caddy caddy validate --config /etc/caddy/Caddyfile &>/dev/null; then
     log_success "Caddy configuration is valid"
 else
-    log_warn "Caddy configuration has issues. Check with: caddy validate --config $CADDYFILE"
+    log_warn "Caddy configuration has issues. Check with: docker exec caddy caddy validate --config /etc/caddy/Caddyfile"
 fi
 
 print_complete "Caddy Installation Complete"
 
-CADDY_VERSION=$(caddy version | head -1)
-echo -e "${BLUE}Caddy:${NC}"
-echo -e "  Version:    ${YELLOW}$CADDY_VERSION${NC}"
+echo -e "${BLUE}Caddy (Docker):${NC}"
+echo -e "  Container:  ${GREEN}$(docker ps --format '{{.Image}}' -f name=^caddy$)${NC}"
 echo -e "  Config:     ${YELLOW}$CADDYFILE${NC}"
-echo -e "  Status:     ${GREEN}$(systemctl is-active caddy)${NC}"
+echo -e "  Snippets:   ${YELLOW}$CADDY_CONF_DIR/${NC}"
+echo -e "  Status:     ${GREEN}$(docker ps --format '{{.Status}}' -f name=^caddy$)${NC}"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo -e "  1. Add per-app configs to ${GREEN}$CADDY_CONF_DIR/<app>.caddy${NC}"
-echo -e "  2. Reload: ${GREEN}sudo systemctl reload caddy${NC}"
+echo -e "  2. Reload: ${GREEN}docker exec caddy caddy reload --config /etc/caddy/Caddyfile${NC}"
 echo ""
 echo -e "${YELLOW}Example — ${CADDY_CONF_DIR}/myapp.caddy:${NC}"
 echo -e "  myapp.example.com {"
-echo -e "      reverse_proxy myapp:3000"
+echo -e "      reverse_proxy myapp-container:3000"
 echo -e "  }"
 echo ""
