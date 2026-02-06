@@ -212,6 +212,15 @@ inject_configs() {
 
 find_compose_file() {
     local app_dir="$1"
+    local env_name="${2:-}"
+    # Check for env-specific compose file first
+    if [ -n "$env_name" ]; then
+        local env_candidate="docker-compose.${env_name}.yml"
+        if [ -f "$app_dir/$env_candidate" ]; then
+            echo "$env_candidate"
+            return 0
+        fi
+    fi
     local candidates=("docker-compose.yml" "compose.yml" "docker-compose.prod.yml")
     for candidate in "${candidates[@]}"; do
         if [ -f "$app_dir/$candidate" ]; then
@@ -286,7 +295,7 @@ teardown_app() {
         if [ -n "$compose_file" ] && [ -f "$app_dir/$compose_file" ]; then
             resolved_compose="$compose_file"
         else
-            resolved_compose=$(find_compose_file "$app_dir") || true
+            resolved_compose=$(find_compose_file "$app_dir" "$DEPLOY_ENV") || true
         fi
 
         if [ -n "$resolved_compose" ]; then
@@ -388,19 +397,30 @@ deploy_app() {
 
     # Resolve compose file
     local resolved_compose=""
-    if [ -n "$compose_file" ]; then
-        if [ -f "$app_dir/$compose_file" ]; then
-            resolved_compose="$compose_file"
-        else
-            log_fail "Specified compose file not found: $compose_file"
-            return 1
+    local is_env_specific=false
+    # Check for env-specific compose file first (e.g. docker-compose.dev.yml)
+    if [ -n "$DEPLOY_ENV" ]; then
+        local env_compose="docker-compose.${DEPLOY_ENV}.yml"
+        if [ -f "$app_dir/$env_compose" ]; then
+            resolved_compose="$env_compose"
+            is_env_specific=true
         fi
-    else
-        resolved_compose=$(find_compose_file "$app_dir") || true
+    fi
+    if [ -z "$resolved_compose" ]; then
+        if [ -n "$compose_file" ]; then
+            if [ -f "$app_dir/$compose_file" ]; then
+                resolved_compose="$compose_file"
+            else
+                log_fail "Specified compose file not found: $compose_file"
+                return 1
+            fi
+        else
+            resolved_compose=$(find_compose_file "$app_dir") || true
+        fi
     fi
 
-    # Generate compose override for named environments
-    if [ -n "$DEPLOY_ENV" ] && [ -n "$resolved_compose" ]; then
+    # Generate compose override for named environments (skip when using env-specific file)
+    if [ -n "$DEPLOY_ENV" ] && [ -n "$resolved_compose" ] && [ "$is_env_specific" = false ]; then
         generate_compose_override "$app_dir" "$dir_name" "$DEPLOY_ENV" "$resolved_compose"
     fi
 
