@@ -103,11 +103,10 @@ if [ "${INSTALL_DOCKER:-true}" = "true" ]; then
     check "Docker Compose is available" docker compose version
 fi
 
-# Caddy
+# Caddy (Docker)
 if [ "${INSTALL_CADDY:-true}" = "true" ]; then
-    check "Caddy is installed" command -v caddy
-    check "Caddy service is running" systemctl is-active --quiet caddy
-    check "Caddy config exists" test -f /etc/caddy/Caddyfile
+    check_grep "Caddy container is running" "caddy" docker ps -q -f name=^caddy$ -f status=running
+    check "Caddy config exists" test -f /opt/apps/caddy/Caddyfile
 fi
 
 # Unattended Upgrades
@@ -155,7 +154,7 @@ if [ $CHECKS_FAILED -eq 0 ]; then
         echo -e "  Docker:   ${GREEN}docker run hello-world${NC}"
     fi
     if [ "${INSTALL_CADDY:-true}" = "true" ]; then
-        echo -e "  Caddy:    ${GREEN}sudo systemctl status caddy${NC}"
+        echo -e "  Caddy:    ${GREEN}docker ps -f name=caddy${NC}"
     fi
     if [ "${CREATE_APP_DIRECTORY:-true}" = "true" ]; then
         echo -e "  Apps:     ${GREEN}cd /opt/apps${NC}"
