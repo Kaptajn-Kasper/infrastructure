@@ -105,7 +105,7 @@ fi
 
 # Caddy (Docker)
 if [ "${INSTALL_CADDY:-true}" = "true" ]; then
-    check_grep "Caddy container is running" "caddy" docker ps -q -f name=^caddy$ -f status=running
+    check_grep "Caddy container is running" "caddy" docker ps -f name=^caddy$ -f status=running
     check "Caddy config exists" test -f /opt/apps/caddy/Caddyfile
 fi
 
