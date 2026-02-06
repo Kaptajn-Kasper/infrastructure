@@ -214,6 +214,16 @@ EOF
     log_success "Created README.md"
 fi
 
+# Install deploy-apps command
+DEPLOY_SCRIPT="$SCRIPT_DIR/../deploy-apps.sh"
+DEPLOY_LINK="/usr/local/bin/deploy-apps"
+if [ -f "$DEPLOY_SCRIPT" ]; then
+    ln -sf "$(readlink -f "$DEPLOY_SCRIPT")" "$DEPLOY_LINK"
+    log_success "Installed deploy-apps command to $DEPLOY_LINK"
+else
+    log_warn "deploy-apps.sh not found at $DEPLOY_SCRIPT — skipping command install"
+fi
+
 # Create caddy network if Docker is installed
 if command_exists docker; then
     if docker network ls | grep -q "caddy-network"; then
@@ -237,8 +247,8 @@ echo -e "    └── README.md"
 echo ""
 echo -e "${BLUE}Ownership:${NC} ${YELLOW}$OWNER${NC}"
 echo ""
-echo -e "${YELLOW}Deploy an app:${NC}"
-echo -e "  cd $APPS_DIR"
-echo -e "  git clone git@github.com:user/myapp.git myapp"
-echo -e "  cd myapp && docker compose up -d"
+echo -e "${YELLOW}Deploy apps:${NC}"
+echo -e "  deploy-apps                      Deploy all apps from manifest"
+echo -e "  deploy-apps --app <name>         Deploy a single app"
+echo -e "  deploy-apps --help               Show all options"
 echo ""

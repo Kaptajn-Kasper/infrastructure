@@ -346,6 +346,145 @@ This guide covers common issues and their solutions.
 
 ---
 
+## App Deployment Issues
+
+### App Failed to Clone
+
+**Symptom**: `deploy-apps` reports "Failed to clone" for an app.
+
+**Cause**: SSH key not registered with GitHub, or repo doesn't exist.
+
+**Solution**:
+
+1. **Test GitHub SSH access**:
+   ```bash
+   ssh -T git@github.com
+   ```
+
+2. **Verify the repo exists and you have access**:
+   ```bash
+   gh repo view Kaptajn-Kasper/myapp
+   ```
+
+3. **Check SSH key is registered**:
+   - Go to https://github.com/settings/keys
+   - Ensure the server's key is listed
+
+4. **Check SSH config**:
+   ```bash
+   cat ~/.ssh/config
+   # Should have Host github.com with IdentityFile pointing to your key
+   ```
+
+---
+
+### Caddy Validation Failed After Deploy
+
+**Symptom**: `deploy-apps` warns "Caddy config validation failed — not reloading".
+
+**Cause**: A `Caddyfile.snippet` in one of your app repos has syntax errors.
+
+**Solution**:
+
+1. **Run validation to see the error**:
+   ```bash
+   sudo caddy validate --config /etc/caddy/Caddyfile
+   ```
+
+2. **Check the snippet that was just copied**:
+   ```bash
+   ls -la /etc/caddy/conf.d/
+   # Review the most recently modified .caddy file
+   ```
+
+3. **Fix the snippet in the app repo**, then re-deploy:
+   ```bash
+   deploy-apps --app <name>
+   ```
+
+---
+
+### App Container Won't Start
+
+**Symptom**: `deploy-apps` succeeds but the app isn't accessible.
+
+**Solution**:
+
+1. **Check container status**:
+   ```bash
+   cd /opt/apps/myapp
+   docker compose ps
+   ```
+
+2. **Check container logs**:
+   ```bash
+   docker compose logs
+   ```
+
+3. **Check for missing config files**:
+   ```bash
+   # See what was seeded on first deploy
+   ls -la /opt/apps/configs/myapp/
+   # Edit with real values, then re-deploy
+   deploy-apps --app myapp
+   ```
+
+4. **Check the app is on the caddy-network**:
+   ```bash
+   docker network inspect caddy-network
+   ```
+
+---
+
+### Build fails with missing environment/config file
+
+**Symptom**: Docker build fails because a config file (e.g., `environment.prod.ts`, `.env`) is missing.
+
+**Cause**: The config was not seeded on first deploy, or the app expects files that don't have a matching example file in the repo.
+
+**Solution**:
+
+1. **Check what's in the config directory**:
+   ```bash
+   find /opt/apps/configs/myapp/ -type f
+   ```
+
+2. **Add the missing file manually**:
+   ```bash
+   # Create the file at the relative path the app expects
+   mkdir -p /opt/apps/configs/myapp/src/environments
+   cp /opt/apps/myapp/src/environments/environment.example.ts \
+      /opt/apps/configs/myapp/src/environments/environment.prod.ts
+   # Edit with real values
+   ```
+
+3. **Re-deploy**:
+   ```bash
+   deploy-apps --app myapp
+   ```
+
+---
+
+### deploy-apps: command not found
+
+**Symptom**: Running `deploy-apps` returns "command not found".
+
+**Cause**: The symlink to `/usr/local/bin/deploy-apps` was not created.
+
+**Solution**:
+
+1. **Re-run the app-directory setup**:
+   ```bash
+   sudo /root/infrastructure/scripts/optional/app-directory.sh
+   ```
+
+2. **Or create the symlink manually**:
+   ```bash
+   sudo ln -sf /root/infrastructure/scripts/deploy-apps.sh /usr/local/bin/deploy-apps
+   ```
+
+---
+
 ## System Issues
 
 ### Out of Disk Space

@@ -68,9 +68,12 @@ if [ ! -f "$CADDYFILE" ] || [ ! -s "$CADDYFILE" ]; then
 #     reverse_proxy app:3000
 # }
 
-# Default: respond with placeholder
+# Import per-app configs from conf.d/
+import /etc/caddy/conf.d/*.caddy
+
+# Default: respond with placeholder on bare IP
 :80 {
-    respond "Caddy is running. Configure your domains in /etc/caddy/Caddyfile"
+    respond "Caddy is running. Configure your domains in /etc/caddy/conf.d/"
 }
 EOF
 
@@ -120,11 +123,11 @@ echo -e "  Config:     ${YELLOW}$CADDYFILE${NC}"
 echo -e "  Status:     ${GREEN}$(systemctl is-active caddy)${NC}"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
-echo -e "  1. Edit ${GREEN}$CADDYFILE${NC} to add your domains"
+echo -e "  1. Add per-app configs to ${GREEN}$CADDY_CONF_DIR/<app>.caddy${NC}"
 echo -e "  2. Reload: ${GREEN}sudo systemctl reload caddy${NC}"
 echo ""
-echo -e "${YELLOW}Example configuration:${NC}"
-echo -e "  example.com {"
-echo -e "      reverse_proxy localhost:3000"
+echo -e "${YELLOW}Example — ${CADDY_CONF_DIR}/myapp.caddy:${NC}"
+echo -e "  myapp.example.com {"
+echo -e "      reverse_proxy myapp:3000"
 echo -e "  }"
 echo ""

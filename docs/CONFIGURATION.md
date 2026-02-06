@@ -267,6 +267,75 @@ AUTO_REBOOT_TIME=02:00
 
 ---
 
+## App Deployment
+
+### `apps.conf`
+
+The app manifest file in the repository root defines which applications to deploy on this server.
+
+**Format**: One app per line — `<github-org/repo> <local-directory-name> [compose-file]`
+
+```bash
+# apps.conf
+Kaptajn-Kasper/map-guesser-game  map-guesser-game  docker-compose.prod.yml
+Kaptajn-Kasper/api-service       api
+```
+
+- Lines starting with `#` are comments
+- Blank lines are ignored
+- The local directory name maps to `/opt/apps/<name>`
+- The compose file column is optional — if omitted, auto-detects from: `docker-compose.yml`, `compose.yml`, `docker-compose.prod.yml`
+- Comment out an app line to skip it during deployment
+
+### `deploy-apps` command
+
+Installed to `/usr/local/bin/deploy-apps` by the app-directory setup. Reads `apps.conf` and handles cloning, container startup, and Caddy configuration for all apps.
+
+```bash
+deploy-apps                      # Deploy all apps from manifest
+deploy-apps --app <name>         # Deploy a single app by directory name
+deploy-apps --pull-only          # Update repos without restarting containers
+deploy-apps --no-caddy           # Skip Caddy snippet configuration and reload
+```
+
+Deployment logs are written to `/opt/apps/logs/deploy-<timestamp>.log`.
+
+### `Caddyfile.snippet` convention
+
+Each app repo can include a `Caddyfile.snippet` at its root to define its own reverse proxy configuration. During deployment, the snippet is copied to `/etc/caddy/conf.d/<app-name>.caddy` and Caddy is reloaded.
+
+Example `Caddyfile.snippet`:
+
+```caddy
+myapp.example.com {
+    reverse_proxy myapp:3000
+}
+```
+
+The main Caddyfile imports all snippets via `import /etc/caddy/conf.d/*.caddy`. Apps without a `Caddyfile.snippet` are skipped — you can always add Caddy config manually later.
+
+### Config injection
+
+App secrets and environment files are managed through `/opt/apps/configs/<app>/`. This directory persists across deploys and git operations.
+
+**How it works**:
+
+1. **First deploy**: The deploy script scans the app for example/template files (`.env.example`, `*.example.*`, `*.template.*`), copies them into `/opt/apps/configs/<app>/` with the example part stripped from the filename, and stops before building. You edit the files with real values.
+
+2. **Every deploy after that**: The script copies files from `/opt/apps/configs/<app>/` into the app directory (preserving relative paths) before building. No manual steps needed.
+
+**Config directory structure** mirrors the app directory:
+
+```
+/opt/apps/configs/map-guesser-game/
+├── .env                                    → /opt/apps/map-guesser-game/.env
+└── src/environments/environment.prod.ts    → /opt/apps/map-guesser-game/src/environments/environment.prod.ts
+```
+
+**Adding config files manually**: You can put any file into the configs directory at the appropriate relative path. The deploy script will copy it into the app on every deploy. This is useful for files that don't have a corresponding example file in the repo.
+
+---
+
 ## Example Configurations
 
 ### Minimal Server (No Docker/Caddy)
