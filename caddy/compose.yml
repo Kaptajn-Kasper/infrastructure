@@ -1,0 +1,28 @@
+# Edge proxy for all apps. Managed by bin/infra-apply.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - /srv/infra/caddy:/etc/caddy:ro
+      - /etc/infra/caddy:/etc/caddy-extra:ro
+      - data:/data
+      - config:/config
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    networks: [edge]
+
+volumes:
+  data:
+  config:
+
+networks:
+  edge:
+    external: true

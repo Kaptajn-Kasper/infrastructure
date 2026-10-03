@@ -1,69 +1,30 @@
 # Infrastructure
 
-Automated server provisioning and app deployment for Ubuntu VPS instances with Docker Compose and Caddy reverse proxy.
+Provisioning and deployment for one Hetzner VM hosting small web apps, each with
+`dev`, `preprod` and `prod` environments. See README.md for the full picture and
+docs/REDESIGN-PLAN.md for the design rationale.
 
 ## Repository structure
 
-- `setup.sh` — Main orchestrator, runs core + optional scripts
-- `bootstrap.sh` — Cloud-init entry point for fresh servers
-- `apps.conf` — App deployment manifest (which repos to deploy where)
-- `scripts/core/` — Always-run setup scripts (SSH, firewall, users, MOTD)
-- `scripts/optional/` — Conditionally-run scripts (Docker, Caddy, app directory)
-- `scripts/deploy-apps.sh` — App deployment script (installed as `deploy-apps`)
-- `scripts/lib/common.sh` — Shared logging/utility functions
-- `docs/CONFIGURATION.md` — Full configuration reference including deployment workflows
-- `docs/TROUBLESHOOTING.md` — Common issues and solutions
-
-## Server layout
-
-- `/opt/apps/` — App clone directories
-- `/opt/apps/configs/<app>/` — Per-app secret/config files (persist across deploys)
-- `/opt/apps/caddy/conf.d/` — Caddy reverse proxy snippets (one `.caddy` file per app)
-- `/opt/apps/logs/` — Deployment logs
-
-## deploy-apps
-
-The main deployment tool. Reads `apps.conf` and for each app: clones/pulls the repo, seeds/injects configs, builds containers, and configures Caddy.
-
-### Key commands
-
-```bash
-deploy-apps                                                    # Deploy all apps (prod)
-deploy-apps --app map-guesser-game                             # Deploy single app (prod)
-deploy-apps --app map-guesser-game --env dev --branch feature/x  # Deploy branch to isolated env
-deploy-apps --app map-guesser-game --env dev --teardown        # Tear down an env
-deploy-apps --app map-guesser-game --branch hotfix/fix         # Deploy specific branch to prod
-```
-
-### Environment deployments (`--env`)
-
-`--env <name>` creates a fully isolated deployment alongside prod:
-
-| Aspect | Prod (no `--env`) | `--env dev` |
-|--------|-------------------|-------------|
-| Clone dir | `/opt/apps/<app>/` | `/opt/apps/<app>-dev/` |
-| Config dir | `/opt/apps/configs/<app>/` | `/opt/apps/configs/<app>-dev/` |
-| Container names | `*-prod` (from compose) | `*-dev` (auto-generated override) |
-| Caddy snippet | `Caddyfile.snippet` | `Caddyfile.snippet.dev` |
-| Git branch | default | specified via `--branch` |
-
-Rules: `--env prod` is rejected (prod = no flag), `--teardown` requires `--env`, env names must match `^[a-z][a-z0-9-]*$`.
-
-### Config injection flow
-
-1. First deploy seeds example files into `/opt/apps/configs/<app>/` and stops — edit with real values
-2. Every subsequent deploy copies configs from that directory into the app before building
-
-### Adding env support to a new app
-
-1. Add `Caddyfile.snippet.<env>` to the app repo (e.g. `Caddyfile.snippet.dev`)
-2. Add `.compose.env-override.yml` to the app's `.gitignore`
-3. Add a DNS record for the env subdomain
+- `cloud-init.yaml` — complete host provisioning (pasted into Hetzner on server creation)
+- `bin/deploy` — the only command the CI runner may run as root (via sudo); validates every argument
+- `bin/infra-apply` — syncs this repo onto the host (scripts, sudoers, Caddy, site blocks)
+- `bin/install-runner` — registers the org-level GitHub Actions runner (label `deploy`)
+- `bin/render-caddy-sites` — generates Caddy site blocks from `apps/*/app.conf`
+- `caddy/` — Caddy compose file and Caddyfile (edge proxy on the `edge` network)
+- `apps/<app>/app.conf` — `IMAGE`, `HOST`, `DOMAIN`, `PORT`, `ENVS` (plain KEY=value, never sourced)
+- `apps/<app>/compose.yml` — hardened service definition, parameterised by `IMAGE` and `ENV`
+- `.github/workflows/app-pipeline.yml` — reusable: build → dev → preprod → prod (environment approval)
+- `.github/workflows/ci.yml` — shellcheck, cloud-init schema, compose config, caddy validate
 
 ## Conventions
 
-- App repos contain `Caddyfile.snippet` for prod routing and `Caddyfile.snippet.<env>` for env routing
-- App repos contain `docker-compose.prod.yml` (or `docker-compose.yml` / `compose.yml`)
-- Secrets go in `/opt/apps/configs/`, never committed to git
-- Container names in compose files use `-prod` suffix (gets replaced by `--env`)
-- All containers join the `caddy-network` Docker network for Caddy routing
+- Images are built on GitHub-hosted runners only; the VM never builds source.
+- Deploys always use digest-pinned images: `ghcr.io/kaptajn-kasper/<app>@sha256:…`.
+- Compose project name is `<app>-<env>`; the web service gets the network alias `<app>-<env>`.
+- Hostnames: prod `<HOST>.<DOMAIN>`, others `<HOST>-<env>.<DOMAIN>` (basic auth + noindex).
+- App containers: read-only rootfs, `cap_drop: ALL`, `no-new-privileges`, no published ports, no host mounts.
+- Secrets live in `/etc/apps/<app>/<env>.env` on the host, never in git.
+- Never give the `runner` user anything beyond `sudo /usr/local/bin/deploy`.
+- Repos are public: the `vm-deploy` runner group only admits `app-pipeline.yml@main`; never add `pull_request` triggers to jobs that run on the self-hosted runner.
+- Scripts are bash with `set -euo pipefail` and must pass shellcheck.

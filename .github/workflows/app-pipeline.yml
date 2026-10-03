@@ -1,0 +1,112 @@
+# Reusable pipeline for app repos: build → dev → preprod → prod (approval).
+#
+# Caller (app repo, .github/workflows/pipeline.yml):
+#   on: { push: { branches: [main] }, workflow_dispatch: }
+#   permissions: { contents: read, packages: write }
+#   jobs:
+#     pipeline:
+#       uses: Kaptajn-Kasper/infrastructure/.github/workflows/app-pipeline.yml@main
+#       with: { app: <app> }
+#
+# Pushes to main deploy dev, then preprod, then wait for approval on the app
+# repo's "prod" environment (required reviewers). All three get the same image
+# digest. A manual run from any other branch deploys that branch to dev only.
+#
+# The self-hosted runner group only admits jobs from this file on main, so app
+# repos (and fork PRs) cannot run their own jobs on the VM.
+name: app-pipeline
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: App name; must match apps/<app>/ in the infra repo
+        type: string
+        required: true
+      dockerfile:
+        type: string
+        default: Dockerfile
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: name
+        env:
+          APP: ${{ inputs.app }}
+        run: echo "repo=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$APP" >>"$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.name.outputs.repo }}:sha-${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - id: ref
+        env:
+          REPO: ${{ steps.name.outputs.repo }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "image=$REPO@$DIGEST" >>"$GITHUB_OUTPUT"
+
+  deploy-dev:
+    needs: build
+    runs-on: [self-hosted, deploy]
+    environment: dev
+    permissions:
+      packages: read
+    concurrency: deploy-${{ inputs.app }}-dev
+    steps:
+      - env:
+          APP: ${{ inputs.app }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" dev "$IMAGE"
+
+  deploy-preprod:
+    needs: [build, deploy-dev]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, deploy]
+    environment: preprod
+    permissions:
+      packages: read
+    concurrency: deploy-${{ inputs.app }}-preprod
+    steps:
+      - env:
+          APP: ${{ inputs.app }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" preprod "$IMAGE"
+
+  deploy-prod:
+    needs: [build, deploy-preprod]
+    runs-on: [self-hosted, deploy]
+    environment: prod
+    permissions:
+      packages: read
+    concurrency: deploy-${{ inputs.app }}-prod
+    steps:
+      - env:
+          APP: ${{ inputs.app }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" prod "$IMAGE"

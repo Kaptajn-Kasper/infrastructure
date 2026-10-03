@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# install-runner — register this host as an org-level GitHub Actions runner.
+#
+# Usage: sudo install-runner <registration-token>
+#
+# Get the token from github.com/organizations/Kaptajn-Kasper/settings/actions/runners/new
+# (valid for one hour). The runner runs as the unprivileged "runner" user and
+# picks up only jobs with `runs-on: [self-hosted, deploy]`. Create the "vm-deploy"
+# runner group first (see README).
+set -euo pipefail
+
+ORG_URL=https://github.com/Kaptajn-Kasper
+RUNNER_DIR=/opt/actions-runner
+RUNNER_USER=runner
+
+token=${1:?usage: install-runner <registration-token>}
+[[ $EUID -eq 0 ]] || { echo "install-runner: must run as root" >&2; exit 1; }
+
+case $(uname -m) in
+  x86_64) arch=x64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "install-runner: unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+
+version=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name)
+version=${version#v}
+tarball=actions-runner-linux-$arch-$version.tar.gz
+
+install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0750 "$RUNNER_DIR"
+cd "$RUNNER_DIR"
+if [[ ! -x ./config.sh ]]; then
+  curl -fsSL -o "$tarball" "https://github.com/actions/runner/releases/download/v$version/$tarball"
+  tar xzf "$tarball"
+  rm -f "$tarball"
+  chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
+  ./bin/installdependencies.sh
+fi
+
+sudo -u "$RUNNER_USER" ./config.sh --unattended --replace \
+  --url "$ORG_URL" --token "$token" \
+  --runnergroup vm-deploy --name "$(hostname)" --labels deploy --work _work
+
+./svc.sh install "$RUNNER_USER"
+./svc.sh start
+echo "install-runner: runner $(hostname) registered and started"
