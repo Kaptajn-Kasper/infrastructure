@@ -1,0 +1,24 @@
+# Edge proxy. Site blocks are generated per app by bin/render-caddy-sites into
+# /etc/infra/caddy/sites/ (mounted at /etc/caddy-extra/sites/).
+
+# Defines the (nonprod_auth) snippet: basic_auth with the hash from
+# /etc/infra/caddy/auth.caddy, created by infra-apply.
+import /etc/caddy-extra/auth.caddy
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+(nonprod) {
+	import common
+	import nonprod_auth
+	header X-Robots-Tag "noindex, nofollow"
+}
+
+import /etc/caddy-extra/sites/*.caddy

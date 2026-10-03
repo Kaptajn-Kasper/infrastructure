@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# deploy — deploy one app environment from a digest-pinned GHCR image.
+#
+# This is the only command the GitHub Actions runner may run as root
+# (see /etc/sudoers.d/runner), so it treats every argument as untrusted.
+#
+# Usage:
+#   deploy <app> <env> <image>@sha256:<digest>
+#   deploy <app> <env> --from <other-env>      # promote what <other-env> runs
+#
+# An optional GHCR token (e.g. the workflow's GITHUB_TOKEN) may be passed on
+# stdin; it is used for a single pull and never written to a persistent path.
+set -euo pipefail
+umask 077
+
+INFRA_DIR=/srv/infra
+STATE_DIR=/var/lib/deploy
+LOG_FILE=/var/log/deploy.log
+
+die() { echo "deploy: $*" >&2; exit 1; }
+usage() {
+  echo "usage: deploy <app> <env> <image>@sha256:<digest>" >&2
+  echo "       deploy <app> <env> --from <other-env>" >&2
+  exit 2
+}
+
+[[ $EUID -eq 0 ]] || die "must run as root (sudo)"
+[[ $# -ge 3 ]] || usage
+
+app=$1
+env=$2
+[[ $app =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid app name"
+[[ $env =~ ^[a-z][a-z0-9-]*$ ]] || die "invalid env name"
+
+app_dir=$INFRA_DIR/apps/$app
+[[ -f $app_dir/app.conf && -f $app_dir/compose.yml ]] || die "unknown app: $app"
+
+conf() { sed -n "s/^$1=//p" "$app_dir/app.conf" | tail -n1; }
+image_repo=$(conf IMAGE)
+envs=$(conf ENVS)
+[[ -n $image_repo ]] || die "IMAGE missing in $app_dir/app.conf"
+[[ " $envs " == *" $env "* ]] || die "env '$env' is not in ENVS ($envs) for $app"
+
+if [[ $3 == --from ]]; then
+  [[ $# -eq 4 ]] || usage
+  src=$4
+  [[ " $envs " == *" $src "* ]] || die "env '$src' is not in ENVS ($envs) for $app"
+  [[ -f $STATE_DIR/$app-$src.image ]] || die "nothing is deployed in $app/$src"
+  image=$(<"$STATE_DIR/$app-$src.image")
+else
+  [[ $# -eq 3 ]] || usage
+  image=$3
+fi
+[[ $image =~ ^"$image_repo"@sha256:[a-f0-9]{64}$ ]] \
+  || die "image must be $image_repo@sha256:<digest>"
+
+# --- Pull --------------------------------------------------------------------
+token=""
+if [[ ! -t 0 ]]; then
+  IFS= read -r -t 5 token || true
+fi
+if [[ -n $token ]]; then
+  DOCKER_CONFIG=$(mktemp -d)
+  export DOCKER_CONFIG
+  trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+  printf '%s' "$token" | docker login ghcr.io -u token --password-stdin >/dev/null
+fi
+if ! docker pull -q "$image" >/dev/null; then
+  docker image inspect "$image" >/dev/null 2>&1 || die "cannot pull $image"
+  echo "deploy: pull failed, using locally cached image"
+fi
+
+# --- Up ----------------------------------------------------------------------
+project=$app-$env
+state_file=$STATE_DIR/$project.image
+mkdir -p "$STATE_DIR"
+
+compose_up() {
+  APP=$app ENV=$env IMAGE=$1 docker compose -p "$project" -f "$app_dir/compose.yml" \
+    up -d --pull never --remove-orphans --wait --wait-timeout 120
+}
+
+echo "deploy: $project -> $image"
+if ! compose_up "$image"; then
+  if [[ -f $state_file ]]; then
+    previous=$(<"$state_file")
+    echo "deploy: health check failed, rolling back to $previous" >&2
+    compose_up "$previous" || echo "deploy: rollback failed too" >&2
+  fi
+  echo "$(date -u +%FT%TZ) FAILED $project $image by=${SUDO_USER:-root}" >>"$LOG_FILE"
+  die "deploy of $project failed"
+fi
+
+echo "$image" >"$state_file"
+echo "$(date -u +%FT%TZ) OK $project $image by=${SUDO_USER:-root}" >>"$LOG_FILE"
+echo "deploy: $project is healthy"

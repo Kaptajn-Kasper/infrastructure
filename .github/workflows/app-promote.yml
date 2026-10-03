@@ -1,0 +1,30 @@
+# Reusable prod promotion: deploys exactly the image currently running in
+# preprod to prod. Triggered manually from the app repo.
+#
+# Caller (app repo, .github/workflows/promote.yml):
+#   on: workflow_dispatch
+#   permissions: { packages: read }
+#   jobs:
+#     promote:
+#       uses: Kaptajn-Kasper/infrastructure/.github/workflows/app-promote.yml@main
+#       with: { app: <app> }
+name: app-promote
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        type: string
+        required: true
+
+jobs:
+  deploy-prod:
+    runs-on: [self-hosted, deploy]
+    permissions:
+      packages: read
+    concurrency: deploy-${{ inputs.app }}-prod
+    steps:
+      - env:
+          APP: ${{ inputs.app }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" prod --from preprod

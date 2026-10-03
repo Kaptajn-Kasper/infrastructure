@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# infra-apply — bring the host in line with this repo. Safe to re-run.
+#
+# Usage: sudo infra-apply [--no-pull]
+#
+#   1. git pull /srv/infra (unless --no-pull)
+#   2. install bin/ scripts and the runner's sudoers rule
+#   3. create the "edge" network, the non-prod basic auth, and env file stubs
+#   4. render Caddy site blocks and (re)start/reload Caddy
+set -euo pipefail
+umask 022
+
+INFRA_DIR=/srv/infra
+ETC_DIR=/etc/infra
+CADDY_ETC=$ETC_DIR/caddy
+
+log() { echo "infra-apply: $*"; }
+die() { echo "infra-apply: $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "must run as root (sudo)"
+
+if [[ ${1:-} != --no-pull ]]; then
+  log "pulling $INFRA_DIR"
+  git -C "$INFRA_DIR" pull --ff-only --quiet
+fi
+
+# --- Scripts and sudoers -----------------------------------------------------
+install -m 0755 -o root -g root "$INFRA_DIR/bin/deploy" /usr/local/bin/deploy
+install -m 0755 -o root -g root "$INFRA_DIR/bin/infra-apply" /usr/local/sbin/infra-apply
+
+sudoers_tmp=$(mktemp)
+echo "runner ALL=(root) NOPASSWD: /usr/local/bin/deploy" >"$sudoers_tmp"
+visudo -cqf "$sudoers_tmp" || die "invalid sudoers rule"
+install -m 0440 -o root -g root "$sudoers_tmp" /etc/sudoers.d/runner
+rm -f "$sudoers_tmp"
+log "installed deploy, infra-apply and sudoers rule"
+
+# --- Docker network ----------------------------------------------------------
+docker network inspect edge >/dev/null 2>&1 || docker network create edge >/dev/null
+
+# --- Non-prod basic auth -----------------------------------------------------
+mkdir -p "$CADDY_ETC/sites"
+if [[ ! -f $CADDY_ETC/auth.caddy ]]; then
+  password=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+  hash=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "$password")
+  cat >"$CADDY_ETC/auth.caddy" <<AUTH
+(nonprod_auth) {
+	basic_auth {
+		preview $hash
+	}
+}
+AUTH
+  log "created non-prod basic auth — user: preview  password: $password"
+  log "store this password now; it is not shown again"
+fi
+
+# --- Per-app env files -------------------------------------------------------
+for conf_file in "$INFRA_DIR"/apps/*/app.conf; do
+  app=$(basename "$(dirname "$conf_file")")
+  for env in $(sed -n 's/^ENVS=//p' "$conf_file" | tail -n1); do
+    env_file=/etc/apps/$app/$env.env
+    if [[ ! -f $env_file ]]; then
+      install -d -m 0700 "/etc/apps/$app"
+      install -m 0600 /dev/null "$env_file"
+      log "created empty $env_file — add the app's runtime config there"
+    fi
+  done
+done
+
+# --- Caddy -------------------------------------------------------------------
+"$INFRA_DIR/bin/render-caddy-sites" "$INFRA_DIR" "$CADDY_ETC/sites"
+docker compose -p caddy -f "$INFRA_DIR/caddy/compose.yml" up -d --quiet-pull
+# A freshly (re)created container needs a moment before its admin API answers.
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if docker compose -p caddy -f "$INFRA_DIR/caddy/compose.yml" exec -T caddy \
+    caddy reload --config /etc/caddy/Caddyfile 2>/dev/null; then
+    break
+  fi
+  [[ $attempt -lt 10 ]] || die "caddy reload failed; check: docker logs caddy-caddy-1"
+  sleep 2
+done
+log "caddy is up to date"

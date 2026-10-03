@@ -1,204 +1,102 @@
 # Infrastructure
 
-Automated infrastructure setup for quickly provisioning Ubuntu VPS instances for Docker Compose application deployment with Caddy reverse proxy.
+One Hetzner VM that hosts small hobby web apps. Each app has `dev`, `preprod`
+and `prod` environments, deployed from GitHub Actions through a self-hosted
+runner on the VM.
 
-**Philosophy**: Make it easier to spin up a new server than to fix a broken one.
+```
+push to main ─► build image (GitHub-hosted) ─► ghcr.io/kaptajn-kasper/<app>@sha256:…
+             ─► deploy dev      (self-hosted runner → sudo deploy)
+             ─► deploy preprod  (automatic, once dev is healthy)
+"promote" workflow (manual) ─► deploy prod = the image preprod is running
+```
 
-## Quick Start
+Design rationale and the security model: [docs/REDESIGN-PLAN.md](docs/REDESIGN-PLAN.md),
+[docs/SECURITY.md](docs/SECURITY.md).
 
-### Manual Setup (SSH)
+## Layout
+
+| Path | Purpose |
+|------|---------|
+| `cloud-init.yaml` | Complete host provisioning (users, SSH, Docker, updates, swap) |
+| `bin/deploy` | The only command CI may run as root: deploy a digest-pinned image to one app env |
+| `bin/infra-apply` | Sync this repo onto the host: scripts, sudoers, Caddy, site config |
+| `bin/install-runner` | Register the GitHub Actions runner as the unprivileged `runner` user |
+| `bin/render-caddy-sites` | Generate Caddy site blocks from `apps/*/app.conf` |
+| `caddy/` | Edge proxy (automatic HTTPS) on the `edge` Docker network |
+| `apps/<app>/` | `app.conf` (image, hostname, port, envs) and hardened `compose.yml` |
+| `.github/workflows/app-*.yml` | Reusable workflows that app repos call |
+
+On the host:
+
+| Path | Purpose |
+|------|---------|
+| `/srv/infra` | Checkout of this repo |
+| `/etc/apps/<app>/<env>.env` | Runtime config and secrets per app env (root, 0600) |
+| `/etc/infra/caddy/` | Generated site blocks and non-prod basic auth |
+| `/var/lib/deploy/<app>-<env>.image` | Image currently deployed per env |
+| `/var/log/deploy.log` | Deploy history (use it to find digests for rollback) |
+
+## Rebuilding the server from scratch
+
+**1. Hetzner Cloud Firewall** (Console → Firewalls), inbound rules:
+
+| Protocol | Port | Source |
+|----------|------|--------|
+| TCP | 22 | your IP (`/32`) |
+| TCP | 80 | any |
+| TCP | 443 | any |
+| UDP | 443 | any |
+
+**2. Create the server:** Ubuntu 24.04, CX22 (or larger). Attach the firewall.
+In "Cloud config", paste `cloud-init.yaml` with your SSH public key filled in.
+
+**3. DNS:** create an A record `*.kaptajnkasper.net` (and the bare
+`kaptajnkasper.net` if used) pointing to the server IP.
+
+**4. Bootstrap:** wait about 3 minutes for cloud-init, then:
 
 ```bash
-# 1. Clone the repository on your server
-git clone https://github.com/YOUR_USER/infrastructure.git
-cd infrastructure
+ssh admin@<server-ip>
+sudo cat /root/.ssh/infra_deploy.pub
+# → add as a read-only deploy key: infrastructure repo → Settings → Deploy keys
 
-# 2. Create and customize your configuration
-cp .env.template .env
-nano .env
-
-# 3. Run the setup (as root)
-sudo ./setup.sh
+# Runner token: github.com/organizations/Kaptajn-Kasper/settings/actions/runners/new
+sudo infra-bootstrap <runner-registration-token>
 ```
 
-### Cloud-Init Setup
+`infra-bootstrap` prints the non-prod basic auth password once. Save it in your
+password manager.
 
-Paste the following into your VPS provider's "User Data" field:
+**5. App config:** fill in `/etc/apps/<app>/<env>.env` for each app (e.g.
+`MAPTILER_KEY=…`), then re-run the app's pipeline.
+
+## Day-to-day
 
 ```bash
-#!/bin/bash
-export GITHUB_REPO="https://github.com/YOUR_USER/infrastructure.git"
-export SSH_PORT=22022
-export OPERATOR_USER=operator
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/infrastructure/main/bootstrap.sh | bash
+# Apply changes merged to this repo (new app, Caddy tweak, script change)
+sudo infra-apply
+
+# Roll back prod to an earlier image
+grep map-guesser-game-prod /var/log/deploy.log
+sudo deploy map-guesser-game prod ghcr.io/kaptajn-kasper/map-guesser-game@sha256:<digest>
+
+# Logs and status
+docker compose ls
+docker logs -f map-guesser-game-prod-web-1
+journalctl -u 'actions.runner.*' -f
 ```
 
-## What Gets Installed
+If an image is not cached locally, the manual `deploy` needs registry access first:
+`docker login ghcr.io` with a token that has `read:packages`.
 
-### Core (Always)
+## Adding an app
 
-| Component | Description |
-|-----------|-------------|
-| SSH Hardening | Custom port, rate limiting |
-| UFW Firewall | Deny incoming, allow SSH/HTTP/HTTPS |
-| Operator User | Daily admin with full sudo |
-| GH Actions User | CI/CD user with limited sudo |
-| GitHub SSH | SSH key + gh CLI |
-| System Config | UTC timezone, swap, locale |
-| Welcome Screen | Custom MOTD |
+See [docs/ADDING-AN-APP.md](docs/ADDING-AN-APP.md).
 
-### Optional (Configurable via .env)
+## One-time GitHub settings
 
-| Component | Flag | Default |
-|-----------|------|---------|
-| Docker + Compose | `INSTALL_DOCKER` | `true` |
-| Caddy | `INSTALL_CADDY` | `true` |
-| Auto Updates | `INSTALL_UNATTENDED_UPGRADES` | `true` |
-| App Directory | `CREATE_APP_DIRECTORY` | `true` |
-
-## Directory Structure
-
-```
-infrastructure/
-├── setup.sh                 # Main orchestrator
-├── bootstrap.sh             # Cloud-init bootstrap
-├── .env.template            # Configuration template
-├── .env                     # Your configuration (gitignored)
-│
-├── scripts/
-│   ├── lib/
-│   │   └── common.sh        # Shared functions
-│   │
-│   ├── core/                # Always-run scripts
-│   │   ├── 00-validate-config.sh
-│   │   ├── 01-configure-system.sh
-│   │   ├── 02-change-ssh-port.sh
-│   │   ├── 03-configure-firewall.sh
-│   │   ├── 04-create-operator.sh
-│   │   ├── 05-setup-github-ssh.sh
-│   │   ├── 06-create-gh-actions.sh
-│   │   └── 07-setup-motd.sh
-│   │
-│   ├── optional/            # Conditionally-run scripts
-│   │   ├── docker.sh
-│   │   ├── caddy.sh
-│   │   ├── unattended-upgrades.sh
-│   │   └── app-directory.sh
-│   │
-│   └── verify.sh            # Post-setup health check
-│
-└── docs/
-    ├── CONFIGURATION.md     # Detailed config docs
-    └── TROUBLESHOOTING.md   # Common issues
-```
-
-## Configuration
-
-Copy `.env.template` to `.env` and customize:
-
-```bash
-# SSH Configuration
-SSH_PORT=22022
-
-# User Accounts
-OPERATOR_USER=operator
-GH_ACTIONS_USER=gh-actions
-
-# Optional Components (true/false)
-INSTALL_DOCKER=true
-INSTALL_CADDY=true
-INSTALL_UNATTENDED_UPGRADES=true
-CREATE_APP_DIRECTORY=true
-
-# System Configuration
-CONFIGURE_SWAP=true
-CONFIGURE_TIMEZONE=true
-SERVER_HOSTNAME=myserver
-```
-
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed documentation.
-
-## After Setup
-
-### 1. Test SSH Connection
-
-```bash
-# From your local machine (in a new terminal!)
-ssh -p 22022 operator@your-server-ip
-```
-
-### 2. Add GitHub SSH Key
-
-The setup displays a public key. Add it to GitHub:
-1. Go to https://github.com/settings/ssh/new
-2. Paste the public key
-3. Test: `ssh -T git@github.com`
-
-### 3. Deploy Your First App
-
-```bash
-cd /opt/apps
-git clone git@github.com:your/app.git myapp
-cd myapp
-docker compose up -d
-```
-
-### 4. Configure Caddy
-
-Edit `/etc/caddy/Caddyfile`:
-
-```
-myapp.example.com {
-    reverse_proxy localhost:3000
-}
-```
-
-```bash
-sudo systemctl reload caddy
-```
-
-## Verification
-
-Run the health check to verify everything is working:
-
-```bash
-sudo /path/to/infrastructure/scripts/verify.sh
-```
-
-## Security Features
-
-- **SSH Hardening**: Non-standard port, rate limiting (blocks after 6 attempts in 30s)
-- **Firewall**: UFW with deny-by-default, only SSH/HTTP/HTTPS open
-- **Auto Updates**: Automatic security patches via unattended-upgrades
-- **Least Privilege**: GH Actions user has limited sudo (docker + systemctl only)
-- **Operator Convenience**: Full NOPASSWD sudo for daily operations
-
-## Troubleshooting
-
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common issues and solutions.
-
-### Quick Fixes
-
-**Locked out of SSH?**
-```bash
-# Use VPS console to restore port 22
-sudo ufw allow 22/tcp
-sudo sed -i 's/Port .*/Port 22/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
-```
-
-**Docker permission denied?**
-```bash
-# Re-login to apply group membership
-exit
-ssh -p 22022 operator@server
-```
-
-## Logs
-
-Setup logs are stored in `/var/log/infrastructure-setup/`:
-
-```bash
-ls -la /var/log/infrastructure-setup/
-cat /var/log/infrastructure-setup/setup-*.log
-```
+- Make the app repos and this repo private.
+- This repo → Settings → Actions → General → Access: "Accessible from repositories
+  in the Kaptajn-Kasper organization" (lets app repos call the reusable workflows).
+- Branch protection on `main` of this repo. It defines what the runner may deploy.

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# render-caddy-sites — generate one Caddy site file per app from apps/*/app.conf.
+#
+# Usage: render-caddy-sites <infra-dir> <output-dir>
+#
+# prod is served at <HOST>.<DOMAIN>; every other env at <HOST>-<env>.<DOMAIN>
+# behind basic auth (the "nonprod" snippet in caddy/Caddyfile).
+set -euo pipefail
+
+infra_dir=${1:?usage: render-caddy-sites <infra-dir> <output-dir>}
+out_dir=${2:?usage: render-caddy-sites <infra-dir> <output-dir>}
+
+mkdir -p "$out_dir"
+rm -f "$out_dir"/*.caddy
+
+for conf_file in "$infra_dir"/apps/*/app.conf; do
+  app=$(basename "$(dirname "$conf_file")")
+  conf() { sed -n "s/^$1=//p" "$conf_file" | tail -n1; }
+  host=$(conf HOST)
+  domain=$(conf DOMAIN)
+  port=$(conf PORT)
+  envs=$(conf ENVS)
+  for var in host domain port envs; do
+    [[ -n ${!var} ]] || { echo "render-caddy-sites: ${var^^} missing in $conf_file" >&2; exit 1; }
+  done
+
+  {
+    echo "# Generated from apps/$app/app.conf — do not edit."
+    for env in $envs; do
+      if [[ $env == prod ]]; then
+        echo "$host.$domain {"
+        echo "	import common"
+      else
+        echo "$host-$env.$domain {"
+        echo "	import nonprod"
+      fi
+      echo "	reverse_proxy $app-$env:$port"
+      echo "}"
+      echo
+    done
+  } >"$out_dir/$app.caddy"
+done

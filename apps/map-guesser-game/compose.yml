@@ -1,0 +1,30 @@
+# map-guesser-game, one instance per env. Run by bin/deploy as:
+#   APP=… ENV=… IMAGE=… docker compose -p map-guesser-game-<env> -f compose.yml up
+# Runtime config (e.g. MAPTILER_KEY) lives in /etc/apps/map-guesser-game/<env>.env.
+services:
+  web:
+    image: ${IMAGE:?IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - path: /etc/apps/map-guesser-game/${ENV:?ENV is required}.env
+        required: false
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 100
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      edge:
+        aliases:
+          - map-guesser-game-${ENV}
+
+networks:
+  edge:
+    external: true
