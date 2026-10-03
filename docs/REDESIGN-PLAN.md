@@ -5,7 +5,7 @@ It is meant for a few hobby web apps (starting with `map-guesser-game`), deploye
 from GitHub through a self-hosted runner, with `dev`, `preprod` and `prod`
 environments for each app.
 
-Status: **decided. Phase 1 (infra repo rewrite) implemented on this branch.** Decisions are recorded in §10.
+Status: **decided. Phase 1 (infra repo) and Phase 4 (map-guesser-game) implemented on their `claude/hetzner-vm-infrastructure-plan-2t78mm` branches.** Decisions are recorded in §10.
 
 ---
 
