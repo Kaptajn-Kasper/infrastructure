@@ -49,14 +49,14 @@ each app, secrets on the server rather than in git, and one shared proxy network
 ## 3. Target architecture
 
 ```
-                 GitHub (Kaptajn-Kasper org, private repos)
+                 GitHub (Kaptajn-Kasper org, public repos)
  ┌────────────────────────────────────────────────────────────────┐
  │ app repo: push to main                                         │
  │   └─ build           (GitHub-hosted)  → ghcr.io/…/<app>@sha256 │
  │   └─ deploy dev      (self-hosted, label "deploy")             │
  │   └─ deploy preprod  (self-hosted, after dev is healthy)       │
- │ app repo: "promote" workflow, manual button                    │
- │   └─ deploy prod = image currently running in preprod          │
+ │   └─ deploy prod     (self-hosted, after your approval)        │
+ │ runner group "vm-deploy": only app-pipeline.yml@main may use it│
  └───────────────────────────────┬────────────────────────────────┘
                                  │ outbound HTTPS only (runner polls GitHub)
  ┌───────────────────────────────▼────────────────────────────────┐
@@ -82,7 +82,7 @@ each app, secrets on the server rather than in git, and one shared proxy network
 2. **The self-hosted runner has no privileges.** Its only privilege is one sudoers line for `/usr/local/bin/deploy`. It has no docker group and no SSH keys.
 3. **The registry login is short-lived.** The deploy job passes the workflow's own `GITHUB_TOKEN` (`packages: read`) to `deploy` on stdin. `deploy` logs in using a temporary Docker config directory and deletes it afterwards, so no registry credentials stay on disk.
 4. **The infra repo owns every compose file.** App repos provide an image and nothing else. The compose files enforce read-only rootfs, `cap_drop: ALL`, `no-new-privileges`, memory limits, no host mounts and no published ports.
-5. **Build once, promote the same digest.** Prod is promoted with `deploy <app> prod --from preprod`, so it always gets exactly the image preprod is running.
+5. **Build once, promote the same digest.** dev, preprod and prod all deploy the digest produced by the run's build job.
 6. **Compose project = app + env.** `docker compose -p map-guesser-game-preprod` isolates each environment.
 7. **The Hetzner Cloud Firewall is the outer wall.** There is no UFW.
 
@@ -109,8 +109,7 @@ infrastructure/
 │       └── compose.yml              # hardened service definition
 ├── .github/workflows/
 │   ├── ci.yml                       # shellcheck, cloud-init schema, caddy validate, compose config
-│   ├── app-pipeline.yml             # reusable: build → dev → preprod
-│   └── app-promote.yml              # reusable: preprod → prod
+│   └── app-pipeline.yml             # reusable: build → dev → preprod → prod
 └── docs/
     ├── REDESIGN-PLAN.md             # this file
     ├── ADDING-AN-APP.md
@@ -135,35 +134,42 @@ You paste one file into Hetzner's "Cloud config" field when creating the server.
 | Docker | Official `docker-ce` repo. Log rotation, `no-new-privileges`, `live-restore`. |
 | Swap | 2 GB swapfile |
 | Runner user | `runner` system user, not in the docker group |
-| Infra repo access | A read-only **deploy key** is generated at `/root/.ssh/infra_deploy`. GitHub's host key is pinned. |
+| Infra repo access | Public repo cloned over HTTPS. No GitHub credentials on the server. |
 | Bootstrap | `infra-bootstrap <runner-token>` clones `/srv/infra`, runs `infra-apply` and registers the runner |
 | Cleanup | Weekly `docker image prune` timer |
 
 Steps you do by hand after boot (documented in the README):
 
-1. Add `/root/.ssh/infra_deploy.pub` as a read-only deploy key on the infra repo.
-2. Run `sudo infra-bootstrap <runner registration token>`.
-3. Fill in `/etc/apps/<app>/<env>.env`.
+1. Run `sudo infra-bootstrap <runner registration token>`.
+2. Fill in `/etc/apps/<app>/<env>.env`.
 
 ---
 
 ## 6. CI/CD design
 
-### 6.1 GitHub Free with private repos
+### 6.1 Self-hosted runner on public repos
 
-Making the repos private on the Free org plan changes three things:
+GitHub warns against self-hosted runners on public repos, because anyone can open
+a fork PR that adds a workflow targeting the runner. These org settings close that
+hole, and all of them are available on the Free plan:
 
-- **Environments and required reviewers are not available for private repos on Free.** The prod gate is therefore a separate **manual `promote` workflow**. It can only be triggered by someone with write access, which is just you. It deploys whatever image is currently running in preprod.
-- **Runner groups limited to "selected workflows" are not something we rely on.** With private repos, fork PRs from outsiders are no longer a threat. The runner is registered at org level in the Default group, with the label `deploy`.
-- **Limits:** 2,000 GitHub-hosted Actions minutes per month and 500 MB of private GHCR storage. Self-hosted runner minutes are free and an Angular build takes a few minutes, so this is plenty. Prune old package versions if storage grows.
+- **Runner group `vm-deploy` with "Selected workflows".** Only jobs defined in
+  `Kaptajn-Kasper/infrastructure/.github/workflows/app-pipeline.yml@refs/heads/main`
+  may run on it, and only for the app repos you select. A workflow written in an
+  app repo or a fork cannot target the runner at all.
+- **Fork PR approval:** "Require approval for all external contributors".
+- **No `pull_request` triggers** in `app-pipeline.yml`, plus branch protection on
+  the infra repo's `main`.
+- **Environment `prod` with required reviewers** (free for public repos), with
+  deployment branches limited to `main`.
 
-The infra repo must allow its reusable workflows to be called by other org repos:
-Settings → Actions → General → Access → "Accessible from repositories in the organization".
+Even if all of that failed, the runner user can only call `sudo deploy` with an
+image from the app's own GHCR repository.
 
-### 6.2 App repo workflows (~25 lines total)
+### 6.2 App repo workflow (~15 lines)
 
 ```yaml
-# .github/workflows/pipeline.yml
+# .github/workflows/pipeline.yml (the only workflow an app needs)
 name: pipeline
 on:
   push:
@@ -179,26 +185,13 @@ jobs:
       app: map-guesser-game
 ```
 
-```yaml
-# .github/workflows/promote.yml
-name: promote to prod
-on: workflow_dispatch
-permissions:
-  packages: read
-jobs:
-  promote:
-    uses: Kaptajn-Kasper/infrastructure/.github/workflows/app-promote.yml@main
-    with:
-      app: map-guesser-game
-```
-
 ### 6.3 Environments and URLs
 
 | Env | Trigger | URL | Protection |
 |-----|---------|-----|------------|
 | dev | push to `main`, or manual run from any branch | `map-guesser-dev.kaptajnkasper.net` | basic auth + `noindex` |
 | preprod | automatically after dev is healthy (`main` only) | `map-guesser-preprod.kaptajnkasper.net` | basic auth + `noindex` |
-| prod | manual "promote to prod" workflow | `map-guesser.kaptajnkasper.net` | — |
+| prod | after preprod, once you approve the waiting job | `map-guesser.kaptajnkasper.net` | — |
 
 **DNS:** one wildcard A record `*.kaptajnkasper.net` points at the VM. Caddy gets a
 certificate for each host through HTTP-01.
@@ -226,7 +219,7 @@ deploy <app> <env> --from <other-env>
 
 1. **Runtime config.** Serve `/config.json`, generated at container start from env vars (`MAPTILER_KEY`), and load it with `provideAppInitializer`. Then one image works in every environment. The key ends up in the browser anyway, so protect it with the **HTTP-referrer restriction in MapTiler** for all three hostnames.
 2. **Dockerfile.** Build with `node:22-alpine` and serve with `nginxinc/nginx-unprivileged:alpine` on port 8080. Write only to `/tmp`, because the rootfs is read-only.
-3. **Workflows.** Add `pipeline.yml` and `promote.yml` (§6.2).
+3. **Workflow.** Add `pipeline.yml` (§6.2) and create the `prod` environment with you as required reviewer.
 4. **Delete:** `setup_server.sh`, `re_deploy.sh`, `docker-compose.prod.yml`, `Caddyfile.snippet*`, the unused `nginx/default.conf` and `nginx/production.conf`, and the `.compose.env-override.yml` ignore line.
 5. **Docs.** Update `CLAUDE.md`, `README.md` and `ENVIRONMENT_SETUP.md`.
 
@@ -237,8 +230,8 @@ deploy <app> <env> --from <other-env>
 | Threat | Control |
 |--------|---------|
 | Internet scanning and SSH brute force | Hetzner Firewall allows only 80/443, plus 22 from your IP. Key-only auth, no root login. |
-| Stolen admin key | Still requires your IP. There are no GitHub credentials on the server apart from one read-only deploy key for the infra repo. |
-| Malicious PR runs on the runner | Repos are private. No `pull_request` triggers reach the runner. |
+| Stolen admin key | Still requires your IP. There are no GitHub credentials on the server. |
+| Malicious fork PR runs on the runner | Runner group only admits `app-pipeline.yml@main`, fork PR approval is required, and there are no `pull_request` triggers. |
 | Compromised workflow or token | The runner can only call `deploy` with this app's digest-pinned image into a compose file owned by the infra repo. It has no root shell and no docker socket. |
 | Compromised app container | Read-only rootfs, non-root, `cap_drop: ALL`, `no-new-privileges`, memory limit, no host mounts, no published ports. |
 | Unpatched OS | `unattended-upgrades` with automatic reboot. Rebuilding is the escape hatch. |
@@ -255,18 +248,19 @@ The old VM keeps serving until the new one is verified.
 
 1. **Phase 1: infra repo rewrite** (this branch). Everything in §4.
 2. **Phase 2: GitHub setup (manual).**
-   - Make the repos private.
-   - Allow org access to the infra repo's workflows.
+   - Create the `vm-deploy` runner group (selected repos and selected workflow).
+   - Require approval for fork PR workflows.
    - Protect `main` on the infra repo.
+   - Create the `prod` environment with required reviewers in each app repo.
 3. **Phase 3: new VM.**
    - Create the Hetzner Firewall.
    - Create the CX22 with `cloud-init.yaml`.
-   - Add the deploy key and run `infra-bootstrap`.
+   - Run `infra-bootstrap`.
    - Create the env files.
    - Add the wildcard DNS record.
 4. **Phase 4: map-guesser-game PR** (§7). Merging it deploys dev and preprod on the new VM.
 5. **Phase 5: cut over.**
-   - Run "promote to prod" and point `map-guesser.kaptajnkasper.net` at the new IP.
+   - Approve the waiting prod job and point `map-guesser.kaptajnkasper.net` at the new IP.
    - Delete the old VM.
    - Revoke its old SSH keys and deploy keys in GitHub.
 
@@ -281,4 +275,4 @@ The old VM keeps serving until the new one is verified.
 | Preprod gate | Automatic after dev succeeds |
 | Admin sudo | `NOPASSWD` |
 | Backups | None. Everything is rebuilt from git. |
-| Repo visibility | Private ("internal" visibility needs GitHub Enterprise, so private is the equivalent here). The prod gate is a manual workflow because environment approvals are not available for private repos on Free. |
+| Repo visibility | Public. The runner is protected by a runner group limited to selected workflows (§6.1), and prod is gated by environment approval. |

@@ -14,8 +14,7 @@ docs/REDESIGN-PLAN.md for the design rationale.
 - `caddy/` — Caddy compose file and Caddyfile (edge proxy on the `edge` network)
 - `apps/<app>/app.conf` — `IMAGE`, `HOST`, `DOMAIN`, `PORT`, `ENVS` (plain KEY=value, never sourced)
 - `apps/<app>/compose.yml` — hardened service definition, parameterised by `IMAGE` and `ENV`
-- `.github/workflows/app-pipeline.yml` — reusable: build → dev → preprod
-- `.github/workflows/app-promote.yml` — reusable: preprod → prod
+- `.github/workflows/app-pipeline.yml` — reusable: build → dev → preprod → prod (environment approval)
 - `.github/workflows/ci.yml` — shellcheck, cloud-init schema, compose config, caddy validate
 
 ## Conventions
@@ -27,4 +26,5 @@ docs/REDESIGN-PLAN.md for the design rationale.
 - App containers: read-only rootfs, `cap_drop: ALL`, `no-new-privileges`, no published ports, no host mounts.
 - Secrets live in `/etc/apps/<app>/<env>.env` on the host, never in git.
 - Never give the `runner` user anything beyond `sudo /usr/local/bin/deploy`.
+- Repos are public: the `vm-deploy` runner group only admits `app-pipeline.yml@main`; never add `pull_request` triggers to jobs that run on the self-hosted runner.
 - Scripts are bash with `set -euo pipefail` and must pass shellcheck.

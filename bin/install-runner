@@ -5,7 +5,8 @@
 #
 # Get the token from github.com/organizations/Kaptajn-Kasper/settings/actions/runners/new
 # (valid for one hour). The runner runs as the unprivileged "runner" user and
-# picks up only jobs with `runs-on: [self-hosted, deploy]`.
+# picks up only jobs with `runs-on: [self-hosted, deploy]`. Create the "vm-deploy"
+# runner group first (see README).
 set -euo pipefail
 
 ORG_URL=https://github.com/Kaptajn-Kasper
@@ -37,7 +38,7 @@ fi
 
 sudo -u "$RUNNER_USER" ./config.sh --unattended --replace \
   --url "$ORG_URL" --token "$token" \
-  --name "$(hostname)" --labels deploy --work _work
+  --runnergroup vm-deploy --name "$(hostname)" --labels deploy --work _work
 
 ./svc.sh install "$RUNNER_USER"
 ./svc.sh start

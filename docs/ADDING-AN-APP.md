@@ -24,19 +24,11 @@ jobs:
       app: my-app
 ```
 
-`.github/workflows/promote.yml`:
+In the repo settings, create the environment `prod` with yourself as required
+reviewer and deployment branches limited to `main`. Give `preprod` the same
+branch limit. Without a required reviewer, prod deploys automatically.
 
-```yaml
-name: promote to prod
-on: workflow_dispatch
-permissions:
-  packages: read
-jobs:
-  promote:
-    uses: Kaptajn-Kasper/infrastructure/.github/workflows/app-promote.yml@main
-    with:
-      app: my-app
-```
+In org settings, add the repo to the `vm-deploy` runner group's repository list.
 
 Use runtime configuration (env vars from `/etc/apps/<app>/<env>.env`) rather
 than build-time config, so the same image can run in every environment.
@@ -61,8 +53,8 @@ empty.
 
 ## 4. First deploy
 
-Push to `main` in the app repo. Dev and preprod deploy automatically. Run
-"promote to prod" when preprod looks good.
+Push to `main` in the app repo. Dev and preprod deploy automatically. Approve
+the waiting prod job in the Actions run when preprod looks good.
 
 The wildcard DNS record already covers `<host>.kaptajnkasper.net` and
 `<host>-<env>.kaptajnkasper.net`.

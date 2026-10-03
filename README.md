@@ -8,7 +8,7 @@ runner on the VM.
 push to main ─► build image (GitHub-hosted) ─► ghcr.io/kaptajn-kasper/<app>@sha256:…
              ─► deploy dev      (self-hosted runner → sudo deploy)
              ─► deploy preprod  (automatic, once dev is healthy)
-"promote" workflow (manual) ─► deploy prod = the image preprod is running
+             ─► deploy prod     (waits for your approval on the "prod" environment)
 ```
 
 Design rationale and the security model: [docs/REDESIGN-PLAN.md](docs/REDESIGN-PLAN.md),
@@ -25,7 +25,7 @@ Design rationale and the security model: [docs/REDESIGN-PLAN.md](docs/REDESIGN-P
 | `bin/render-caddy-sites` | Generate Caddy site blocks from `apps/*/app.conf` |
 | `caddy/` | Edge proxy (automatic HTTPS) on the `edge` Docker network |
 | `apps/<app>/` | `app.conf` (image, hostname, port, envs) and hardened `compose.yml` |
-| `.github/workflows/app-*.yml` | Reusable workflows that app repos call |
+| `.github/workflows/app-pipeline.yml` | Reusable workflow that app repos call |
 
 On the host:
 
@@ -58,9 +58,6 @@ In "Cloud config", paste `cloud-init.yaml` with your SSH public key filled in.
 
 ```bash
 ssh admin@<server-ip>
-sudo cat /root/.ssh/infra_deploy.pub
-# → add as a read-only deploy key: infrastructure repo → Settings → Deploy keys
-
 # Runner token: github.com/organizations/Kaptajn-Kasper/settings/actions/runners/new
 sudo infra-bootstrap <runner-registration-token>
 ```
@@ -96,7 +93,16 @@ See [docs/ADDING-AN-APP.md](docs/ADDING-AN-APP.md).
 
 ## One-time GitHub settings
 
-- Make the app repos and this repo private.
-- This repo → Settings → Actions → General → Access: "Accessible from repositories
-  in the Kaptajn-Kasper organization" (lets app repos call the reusable workflows).
-- Branch protection on `main` of this repo. It defines what the runner may deploy.
+The repos are public, so the self-hosted runner must only ever run jobs defined
+in this repo. Set these up before registering the runner:
+
+1. **Runner group:** Org settings → Actions → Runner groups → New group `vm-deploy`.
+   - Repository access: *Selected repositories* (the app repos). Tick "Allow public repositories".
+   - Workflow access: *Selected workflows*:
+     `Kaptajn-Kasper/infrastructure/.github/workflows/app-pipeline.yml@refs/heads/main`
+2. **Fork PRs:** Org settings → Actions → General → "Require approval for all
+   external contributors" (or stricter).
+3. **Branch protection** on `main` of this repo. It defines what the runner may do.
+4. **Per app repo:** Settings → Environments → `prod` → Required reviewers: you,
+   with deployment branches limited to `main`. Do the same branch limit for
+   `preprod`. **Without required reviewers, prod deploys automatically.**

@@ -1,4 +1,4 @@
-# Reusable pipeline for app repos: build → deploy dev → deploy preprod.
+# Reusable pipeline for app repos: build → dev → preprod → prod (approval).
 #
 # Caller (app repo, .github/workflows/pipeline.yml):
 #   on: { push: { branches: [main] }, workflow_dispatch: }
@@ -8,8 +8,12 @@
 #       uses: Kaptajn-Kasper/infrastructure/.github/workflows/app-pipeline.yml@main
 #       with: { app: <app> }
 #
-# Pushes to main deploy dev then preprod. A manual run from any other branch
-# deploys that branch to dev only. Prod is promoted with app-promote.yml.
+# Pushes to main deploy dev, then preprod, then wait for approval on the app
+# repo's "prod" environment (required reviewers). All three get the same image
+# digest. A manual run from any other branch deploys that branch to dev only.
+#
+# The self-hosted runner group only admits jobs from this file on main, so app
+# repos (and fork PRs) cannot run their own jobs on the VM.
 name: app-pipeline
 
 on:
@@ -67,6 +71,7 @@ jobs:
   deploy-dev:
     needs: build
     runs-on: [self-hosted, deploy]
+    environment: dev
     permissions:
       packages: read
     concurrency: deploy-${{ inputs.app }}-dev
@@ -81,6 +86,7 @@ jobs:
     needs: [build, deploy-dev]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, deploy]
+    environment: preprod
     permissions:
       packages: read
     concurrency: deploy-${{ inputs.app }}-preprod
@@ -90,3 +96,17 @@ jobs:
           IMAGE: ${{ needs.build.outputs.image }}
           TOKEN: ${{ github.token }}
         run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" preprod "$IMAGE"
+
+  deploy-prod:
+    needs: [build, deploy-preprod]
+    runs-on: [self-hosted, deploy]
+    environment: prod
+    permissions:
+      packages: read
+    concurrency: deploy-${{ inputs.app }}-prod
+    steps:
+      - env:
+          APP: ${{ inputs.app }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | sudo /usr/local/bin/deploy "$APP" prod "$IMAGE"
