@@ -1,0 +1,11 @@
+{
+  "realm": "prod",
+  "enabled": true,
+  "displayName": "kaptajnkasper.net",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "resetPasswordAllowed": false,
+  "bruteForceProtected": true,
+  "clients": []
+}

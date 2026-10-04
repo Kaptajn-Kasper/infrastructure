@@ -278,3 +278,20 @@ The old VM keeps serving until the new one is verified.
 | Admin sudo | `NOPASSWD` |
 | Backups | None. Everything is rebuilt from git. |
 | Repo visibility | Public. The runner is protected by a runner group limited to selected workflows (§6.1), and prod is gated by environment approval. |
+
+---
+
+## 11. Shared services (added later)
+
+Services used by several apps or environments, starting with Keycloak, live in
+`services/<name>/` in this repo, next to Caddy. App repos still own only their
+code and image.
+
+- **Started by `infra-apply`, never by CI.** The runner keeps its single
+  privilege (`deploy` for an app's own image). Shared services change through a
+  PR plus `sudo infra-apply`, like Caddy.
+- **Keycloak:** one instance at `auth.kaptajnkasper.net` with one realm per
+  environment. The admin console is limited to IPs in `/etc/infra/admin-ips`.
+  Its Postgres sits on a private network.
+- **State:** Keycloak is the first stateful component, so it has a nightly
+  `pg_dump` that must be copied off-server before a rebuild. See `docs/KEYCLOAK.md`.
