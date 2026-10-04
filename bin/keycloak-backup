@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# keycloak-backup — dump the Keycloak database to /var/backups/keycloak, keeping
+# the newest 14 dumps. Run nightly by keycloak-backup.timer.
+#
+# The dumps live on the same disk, so copy them off the server before a rebuild:
+#   scp admin@<server>:/var/backups/keycloak/keycloak-<date>.sql.gz .
+# Restore: see docs/KEYCLOAK.md.
+set -euo pipefail
+umask 077
+
+BACKUP_DIR=/var/backups/keycloak
+KEEP=14
+
+[[ $EUID -eq 0 ]] || { echo "keycloak-backup: must run as root" >&2; exit 1; }
+install -d -m 0700 "$BACKUP_DIR"
+
+out=$BACKUP_DIR/keycloak-$(date -u +%Y%m%dT%H%M%SZ).sql.gz
+docker compose -p keycloak -f /srv/infra/services/keycloak/compose.yml exec -T db \
+  pg_dump -U keycloak --clean --if-exists keycloak | gzip >"$out.tmp"
+mv "$out.tmp" "$out"
+echo "keycloak-backup: wrote $out"
+
+# Keep the newest $KEEP dumps.
+find "$BACKUP_DIR" -maxdepth 1 -name 'keycloak-*.sql.gz' -printf '%T@ %p\n' \
+  | sort -rn | tail -n +$((KEEP + 1)) | cut -d' ' -f2- | xargs -r rm -f

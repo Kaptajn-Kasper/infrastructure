@@ -6,7 +6,8 @@
 #   1. git pull /srv/infra (unless --no-pull)
 #   2. install bin/ scripts and the runner's sudoers rule
 #   3. create the "edge" network, the non-prod basic auth, and env file stubs
-#   4. render Caddy site blocks and (re)start/reload Caddy
+#   4. set up and start shared services (services/*)
+#   5. render Caddy site blocks and (re)start/reload Caddy
 set -euo pipefail
 umask 022
 
@@ -67,8 +68,36 @@ for conf_file in "$INFRA_DIR"/apps/*/app.conf; do
   done
 done
 
+# --- Shared services ---------------------------------------------------------
+# Each services/<name>/ has a compose.yml, a service.conf (Caddy routing) and an
+# optional setup.sh run first (secrets, timers). Not deployable by CI.
+# A failing service is reported at the end instead of stopping here, so Caddy
+# (and every app behind it) is still configured.
+failed_services=()
+for compose_file in "$INFRA_DIR"/services/*/compose.yml; do
+  [[ -f $compose_file ]] || continue
+  service_dir=$(dirname "$compose_file")
+  service=$(basename "$service_dir")
+  if [[ -x $service_dir/setup.sh ]]; then
+    "$service_dir/setup.sh"
+  fi
+  log "starting service $service (may take a few minutes on first start)"
+  if ! docker compose -p "$service" -f "$compose_file" up -d --quiet-pull --remove-orphans \
+    --wait --wait-timeout 300; then
+    echo "infra-apply: service $service is not healthy; check: docker compose -p $service logs" >&2
+    failed_services+=("$service")
+  fi
+done
+
 # --- Caddy -------------------------------------------------------------------
-"$INFRA_DIR/bin/render-caddy-sites" "$INFRA_DIR" "$CADDY_ETC/sites"
+# Admin paths of shared services (e.g. the Keycloak console) are only reachable
+# from the IPs listed here, one per line.
+if [[ ! -f $ETC_DIR/admin-ips ]]; then
+  printf '%s\n' "# IPs/CIDRs allowed to reach admin paths of shared services, one per line." \
+    "# Then run: sudo infra-apply" >"$ETC_DIR/admin-ips"
+  log "created $ETC_DIR/admin-ips — add your IP there to reach admin consoles"
+fi
+"$INFRA_DIR/bin/render-caddy-sites" "$INFRA_DIR" "$CADDY_ETC/sites" "$ETC_DIR/admin-ips"
 docker compose -p caddy -f "$INFRA_DIR/caddy/compose.yml" up -d --quiet-pull
 # A freshly (re)created container needs a moment before its admin API answers.
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -80,3 +109,5 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
 done
 log "caddy is up to date"
+
+[[ ${#failed_services[@]} -eq 0 ]] || die "unhealthy services: ${failed_services[*]}"

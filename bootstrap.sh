@@ -157,7 +157,9 @@ systemctl enable -q --now docker-prune.timer
 if [[ ! -d $INFRA_DIR/.git ]]; then
   git clone -q "$REPO_URL" "$INFRA_DIR"
 fi
-"$INFRA_DIR/bin/infra-apply"
+# A shared service failing (e.g. Keycloak) must not stop the runner from being
+# registered; infra-apply has already configured Caddy and reported the failure.
+"$INFRA_DIR/bin/infra-apply" || log "WARNING: infra-apply reported errors (see above); continuing"
 
 if [[ -n $runner_token ]]; then
   "$INFRA_DIR/bin/install-runner" "$runner_token"

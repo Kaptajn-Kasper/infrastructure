@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
-# render-caddy-sites — generate one Caddy site file per app from apps/*/app.conf.
+# render-caddy-sites — generate Caddy site files from apps/*/app.conf and
+# services/*/service.conf.
 #
-# Usage: render-caddy-sites <infra-dir> <output-dir>
+# Usage: render-caddy-sites <infra-dir> <output-dir> [admin-ips-file]
 #
-# prod is served at <HOST>.<DOMAIN>; every other env at <HOST>-<env>.<DOMAIN>
-# behind basic auth (the "nonprod" snippet in caddy/Caddyfile).
+# Apps: prod is served at <HOST>.<DOMAIN>; every other env at
+# <HOST>-<env>.<DOMAIN> behind basic auth (the "nonprod" snippet in caddy/Caddyfile).
+#
+# Services: served at <HOST>.<DOMAIN>. Requests to ADMIN_PATHS get a 403 unless
+# they come from an IP/CIDR listed in admin-ips-file (one per line, # comments).
 set -euo pipefail
 
-infra_dir=${1:?usage: render-caddy-sites <infra-dir> <output-dir>}
-out_dir=${2:?usage: render-caddy-sites <infra-dir> <output-dir>}
+usage="usage: render-caddy-sites <infra-dir> <output-dir> [admin-ips-file]"
+infra_dir=${1:?$usage}
+out_dir=${2:?$usage}
+admin_ips_file=${3:-}
+
+admin_ips=""
+if [[ -n $admin_ips_file && -f $admin_ips_file ]]; then
+  while read -r ip _; do
+    [[ -z $ip || $ip == \#* ]] && continue
+    [[ $ip =~ ^[0-9a-fA-F:.]+(/[0-9]{1,3})?$ ]] \
+      || { echo "render-caddy-sites: invalid IP '$ip' in $admin_ips_file" >&2; exit 1; }
+    admin_ips+=" $ip"
+  done <"$admin_ips_file"
+fi
 
 mkdir -p "$out_dir"
 rm -f "$out_dir"/*.caddy
@@ -39,4 +55,33 @@ for conf_file in "$infra_dir"/apps/*/app.conf; do
       echo
     done
   } >"$out_dir/$app.caddy"
+done
+
+for conf_file in "$infra_dir"/services/*/service.conf; do
+  [[ -f $conf_file ]] || continue
+  service=$(basename "$(dirname "$conf_file")")
+  conf() { sed -n "s/^$1=//p" "$conf_file" | tail -n1; }
+  host=$(conf HOST)
+  domain=$(conf DOMAIN)
+  upstream=$(conf UPSTREAM)
+  port=$(conf PORT)
+  admin_paths=$(conf ADMIN_PATHS)
+  for var in host domain upstream port; do
+    [[ -n ${!var} ]] || { echo "render-caddy-sites: ${var^^} missing in $conf_file" >&2; exit 1; }
+  done
+
+  {
+    echo "# Generated from services/$service/service.conf — do not edit."
+    echo "$host.$domain {"
+    echo "	import common"
+    if [[ -n $admin_paths ]]; then
+      echo "	@admin_blocked {"
+      echo "		path $admin_paths"
+      [[ -z $admin_ips ]] || echo "		not remote_ip$admin_ips"
+      echo "	}"
+      echo "	respond @admin_blocked 403"
+    fi
+    echo "	reverse_proxy $upstream:$port"
+    echo "}"
+  } >"$out_dir/service-$service.caddy"
 done

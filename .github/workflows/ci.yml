@@ -15,7 +15,10 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: shellcheck
-        run: shellcheck bootstrap.sh bin/*
+        run: shellcheck bootstrap.sh bin/* services/*/setup.sh
+
+      - name: realm JSON
+        run: for f in services/*/realms/*.json; do jq empty "$f"; done
 
       - name: cloud-init schema
         run: |
@@ -29,11 +32,16 @@ jobs:
           for f in apps/*/compose.yml; do
             IMAGE=example ENV=dev docker compose -f "$f" config -q
           done
+          sudo install -d /etc/infra && sudo touch /etc/infra/keycloak.env
+          for f in services/*/compose.yml; do
+            docker compose -f "$f" config -q
+          done
 
       - name: caddy validate
         run: |
           mkdir -p extra
-          bin/render-caddy-sites . extra/sites
+          printf '203.0.113.7\n2001:db8::/32\n' > admin-ips
+          bin/render-caddy-sites . extra/sites admin-ips
           printf '(nonprod_auth) {\n\tbasic_auth {\n\t\tpreview %s\n\t}\n}\n' \
             "$(docker run --rm caddy:2-alpine caddy hash-password --plaintext ci)" > extra/auth.caddy
           docker run --rm -v "$PWD/caddy:/etc/caddy:ro" -v "$PWD/extra:/etc/caddy-extra:ro" \

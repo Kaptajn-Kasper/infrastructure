@@ -25,6 +25,7 @@ Design rationale and the security model: [docs/REDESIGN-PLAN.md](docs/REDESIGN-P
 | `bin/install-runner` | Register the GitHub Actions runner as the unprivileged `runner` user |
 | `bin/render-caddy-sites` | Generate Caddy site blocks from `apps/*/app.conf` |
 | `caddy/` | Edge proxy (automatic HTTPS) on the `edge` Docker network |
+| `services/<name>/` | Shared services used by several apps, e.g. Keycloak at `auth.kaptajnkasper.net` ([docs/KEYCLOAK.md](docs/KEYCLOAK.md)) |
 | `apps/<app>/` | `app.conf` (image, hostname, port, envs) and hardened `compose.yml` |
 | `.github/workflows/app-pipeline.yml` | Reusable workflow that app repos call |
 
@@ -35,6 +36,9 @@ On the host:
 | `/srv/infra` | Checkout of this repo |
 | `/etc/apps/<app>/<env>.env` | Runtime config and secrets per app env (root, 0600) |
 | `/etc/infra/caddy/` | Generated site blocks and non-prod basic auth |
+| `/etc/infra/admin-ips` | IPs allowed to reach admin consoles of shared services |
+| `/etc/infra/keycloak.env` | Keycloak admin and database passwords (generated) |
+| `/var/backups/keycloak/` | Nightly Keycloak database dumps (copy off-server before a rebuild) |
 | `/var/lib/deploy/<app>-<env>.image` | Image currently deployed per env |
 | `/var/log/deploy.log` | Deploy history (use it to find digests for rollback) |
 
@@ -88,7 +92,11 @@ The script is idempotent, so you can re-run it if something fails half-way.
 For a brand-new server, `cloud-init.yaml` runs the same steps automatically when
 pasted into "Cloud config" (with your SSH key selected at creation).
 
-**5. App config:** fill in `/etc/apps/<app>/<env>.env` for each app (e.g.
+**5. Keycloak:** follow "First-time setup" in [docs/KEYCLOAK.md](docs/KEYCLOAK.md).
+The bootstrap prints a temporary admin password for it. If you rebuilt a server
+that already ran Keycloak, restore its last dump.
+
+**6. App config:** fill in `/etc/apps/<app>/<env>.env` for each app (e.g.
 `MAPTILER_KEY=…`), then re-run the app's pipeline.
 
 ## Day-to-day

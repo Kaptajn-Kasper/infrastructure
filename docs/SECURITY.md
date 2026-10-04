@@ -12,6 +12,7 @@
 | `deploy` | Accepts only a known app, a listed env, and that app's own GHCR image pinned by digest. It runs only compose files from this repo. Registry tokens are used once, from a temporary Docker config. |
 | Containers | Read-only rootfs, `cap_drop: ALL`, `no-new-privileges`, memory and pid limits, no host mounts, only the `edge` network. |
 | Non-prod | Basic auth and `X-Robots-Tag: noindex` on every non-prod hostname. |
+| Shared services | Started only by `infra-apply` (never by CI), pinned image versions, `cap_drop: ALL`, `no-new-privileges`. Admin paths (e.g. Keycloak `/admin` and the `master` realm) return 403 except from IPs in `/etc/infra/admin-ips`. Databases sit on internal networks with no route to Caddy. |
 | Patching | `unattended-upgrades` with automatic reboot at 04:00 UTC. Containers restart automatically. |
 | Secrets | Live only in `/etc/apps/**` (root, 0600) and your password manager. Never in git or in images. |
 
@@ -27,8 +28,10 @@ to this repo plus `sudo infra-apply` by the admin.
 
 ## Recovery
 
-There are no backups by design. Everything is rebuilt from git, GHCR images, and
-the env files kept in your password manager. The server holds no GitHub
+Apps have no backups by design. Everything is rebuilt from git, GHCR images, and
+the env files kept in your password manager. The exception is Keycloak: users
+and credentials are state, dumped nightly to `/var/backups/keycloak/` and
+copied off-server by hand before a rebuild (see docs/KEYCLOAK.md). The server holds no GitHub
 credentials: the infra repo is public and cloned over HTTPS, and registry tokens
 are per-job. If in doubt, rebuild the server
 (see README).
