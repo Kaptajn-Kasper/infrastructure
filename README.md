@@ -18,7 +18,8 @@ Design rationale and the security model: [docs/REDESIGN-PLAN.md](docs/REDESIGN-P
 
 | Path | Purpose |
 |------|---------|
-| `cloud-init.yaml` | Complete host provisioning (users, SSH, Docker, updates, swap) |
+| `bootstrap.sh` | Complete host provisioning (users, SSH, Docker, updates, swap), then `infra-apply`. Idempotent. |
+| `cloud-init.yaml` | Optional wrapper that runs `bootstrap.sh` on a brand-new server |
 | `bin/deploy` | The only command CI may run as root: deploy a digest-pinned image to one app env |
 | `bin/infra-apply` | Sync this repo onto the host: scripts, sudoers, Caddy, site config |
 | `bin/install-runner` | Register the GitHub Actions runner as the unprivileged `runner` user |
@@ -37,7 +38,12 @@ On the host:
 | `/var/lib/deploy/<app>-<env>.image` | Image currently deployed per env |
 | `/var/log/deploy.log` | Deploy history (use it to find digests for rollback) |
 
-## Rebuilding the server from scratch
+## Setting up the server
+
+This works on a **rebuilt** server (Hetzner Console → server → Rebuild →
+Ubuntu 24.04), which keeps the server's price and IP address. A rebuild wipes
+the disk, so first copy anything you still need off the old system, such as API
+keys in `/opt/apps/configs/`.
 
 **1. Hetzner Cloud Firewall** (Console → Firewalls), inbound rules:
 
@@ -48,22 +54,39 @@ On the host:
 | TCP | 443 | any |
 | UDP | 443 | any |
 
-**2. Create the server:** Ubuntu 24.04, CX22 (or larger). Attach the firewall.
-In "Cloud config", paste `cloud-init.yaml` with your SSH public key filled in.
+**2. Rebuild the server** with the plain **Ubuntu 24.04** image, and attach the
+firewall. Avoid the "Docker CE" app image; `bootstrap.sh` installs Docker itself.
 
 **3. DNS:** create an A record `*.kaptajnkasper.net` (and the bare
 `kaptajnkasper.net` if used) pointing to the server IP.
 
-**4. Bootstrap:** wait about 3 minutes for cloud-init, then:
+**4. Bootstrap:** log in as root (with the SSH key or root password Hetzner
+gives you after the rebuild) and run:
 
 ```bash
-ssh admin@<server-ip>
+ssh root@<server-ip>
+git clone https://github.com/Kaptajn-Kasper/infrastructure.git /srv/infra
+
 # Runner token: github.com/organizations/Kaptajn-Kasper/settings/actions/runners/new
-sudo infra-bootstrap <runner-registration-token>
+/srv/infra/bootstrap.sh \
+  --ssh-key "ssh-ed25519 AAAA… you@laptop" \
+  --runner-token <runner-registration-token>
 ```
 
-`infra-bootstrap` prints the non-prod basic auth password once. Save it in your
-password manager.
+- `--ssh-key` is the public key you log in with from now on. If you leave it
+  out, root's `authorized_keys` is copied, which works when Hetzner installed
+  your key during the rebuild.
+- `--runner-token` can be left out and the runner registered later with
+  `sudo /srv/infra/bin/install-runner <token>`.
+- The script prints the non-prod basic auth password once. Save it in your
+  password manager.
+- Root login over SSH is disabled at the end. **Keep the root session open**
+  and check `ssh admin@<server-ip>` in a new terminal before closing it.
+
+The script is idempotent, so you can re-run it if something fails half-way.
+
+For a brand-new server, `cloud-init.yaml` runs the same steps automatically when
+pasted into "Cloud config" (with your SSH key selected at creation).
 
 **5. App config:** fill in `/etc/apps/<app>/<env>.env` for each app (e.g.
 `MAPTILER_KEY=…`), then re-run the app's pipeline.
