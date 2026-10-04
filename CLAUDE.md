@@ -6,7 +6,8 @@ docs/REDESIGN-PLAN.md for the design rationale.
 
 ## Repository structure
 
-- `cloud-init.yaml` — complete host provisioning (pasted into Hetzner on server creation)
+- `bootstrap.sh` — complete, idempotent host provisioning; run as root on a fresh/rebuilt Ubuntu 24.04 server
+- `cloud-init.yaml` — optional wrapper that runs `bootstrap.sh` on a brand-new server
 - `bin/deploy` — the only command the CI runner may run as root (via sudo); validates every argument
 - `bin/infra-apply` — syncs this repo onto the host (scripts, sudoers, Caddy, site blocks)
 - `bin/install-runner` — registers the org-level GitHub Actions runner (label `deploy`)

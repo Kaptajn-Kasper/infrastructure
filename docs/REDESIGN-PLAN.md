@@ -94,7 +94,8 @@ each app, secrets on the server rather than in git, and one shared proxy network
 infrastructure/
 ├── README.md                        # overview, rebuild steps, day-2 operations
 ├── CLAUDE.md
-├── cloud-init.yaml                  # entire host provisioning
+├── bootstrap.sh                     # entire host provisioning (run by hand on a rebuilt server)
+├── cloud-init.yaml                  # optional wrapper running bootstrap.sh on a new server
 ├── bin/
 │   ├── deploy                       # the ONLY privileged CI entrypoint
 │   ├── infra-apply                  # sync repo → host (bin, sudoers, caddy, sites)
@@ -121,26 +122,29 @@ infrastructure/
 
 ---
 
-## 5. Host provisioning (`cloud-init.yaml`)
+## 5. Host provisioning (`bootstrap.sh`)
 
-You paste one file into Hetzner's "Cloud config" field when creating the server.
+The existing server is **rebuilt in place** (Hetzner → Rebuild → Ubuntu 24.04)
+to keep its current price. Rebuild does not accept a cloud config, so
+provisioning is an idempotent `bootstrap.sh` run as root after the rebuild.
+`cloud-init.yaml` is a three-line wrapper around it for any future new server.
 
 | Concern | Implementation |
 |---------|----------------|
-| OS | Ubuntu 24.04 LTS, packages upgraded on first boot |
-| Admin user | `admin`, with your SSH key and `NOPASSWD` sudo, in the docker group |
+| OS | Ubuntu 24.04 LTS, packages upgraded by the script |
+| Admin user | `admin`, with your SSH key (`--ssh-key`, or copied from root) and `NOPASSWD` sudo, in the docker group |
 | SSH | `PermitRootLogin no`, `PasswordAuthentication no`, `AllowUsers admin`, port 22. The Hetzner Firewall limits it to your IP. |
 | Updates | `unattended-upgrades` with automatic reboot at 04:00 UTC |
 | Docker | Official `docker-ce` repo. Log rotation, `no-new-privileges`, `live-restore`. |
 | Swap | 2 GB swapfile |
 | Runner user | `runner` system user, not in the docker group |
 | Infra repo access | Public repo cloned over HTTPS. No GitHub credentials on the server. |
-| Bootstrap | `infra-bootstrap <runner-token>` clones `/srv/infra`, runs `infra-apply` and registers the runner |
+| Final step | Runs `infra-apply`, and `install-runner` when `--runner-token` is given |
 | Cleanup | Weekly `docker image prune` timer |
 
-Steps you do by hand after boot (documented in the README):
+Steps you do by hand after the rebuild (documented in the README):
 
-1. Run `sudo infra-bootstrap <runner registration token>`.
+1. As root: `git clone https://github.com/Kaptajn-Kasper/infrastructure.git /srv/infra && /srv/infra/bootstrap.sh --ssh-key "…" --runner-token …`
 2. Fill in `/etc/apps/<app>/<env>.env`.
 
 ---
@@ -252,17 +256,15 @@ The old VM keeps serving until the new one is verified.
    - Require approval for fork PR workflows.
    - Protect `main` on the infra repo.
    - Create the `prod` environment with required reviewers in each app repo.
-3. **Phase 3: new VM.**
-   - Create the Hetzner Firewall.
-   - Create the CX22 with `cloud-init.yaml`.
-   - Run `infra-bootstrap`.
+3. **Phase 3: rebuild the VM in place.** The site is down from here until step 5.
+   - Copy the MapTiler key from `/opt/apps/configs/map-guesser-game/` on the old system.
+   - Create the Hetzner Firewall and attach it.
+   - Rebuild with Ubuntu 24.04 and run `bootstrap.sh` (§5).
    - Create the env files.
-   - Add the wildcard DNS record.
-4. **Phase 4: map-guesser-game PR** (§7). Merging it deploys dev and preprod on the new VM.
-5. **Phase 5: cut over.**
-   - Approve the waiting prod job and point `map-guesser.kaptajnkasper.net` at the new IP.
-   - Delete the old VM.
-   - Revoke its old SSH keys and deploy keys in GitHub.
+   - Add the wildcard DNS record. The IP is unchanged, so the existing prod record keeps working.
+4. **Phase 4: merge the map-guesser-game PR** (§7). This deploys dev and preprod.
+5. **Phase 5: approve the waiting prod job.**
+   - Then revoke the old server's GitHub SSH keys and deploy keys.
 
 ---
 
